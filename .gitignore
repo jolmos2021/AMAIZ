@@ -1,0 +1,12 @@
+# Variables de entorno (¡credenciales — nunca al repositorio!)
+.env
+
+# Respaldos de base de datos
+db/backups/
+
+# Dependencias
+node_modules/
+
+# Sistema
+.DS_Store
+Thumbs.db
