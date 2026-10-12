@@ -10,3 +10,9 @@ node_modules/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Carpeta compilada del backend
+dist/
+
+# Caché de compilación de TypeScript
+*.tsbuildinfo

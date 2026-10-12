@@ -22,12 +22,14 @@ CREATE TYPE tipo_cliente    AS ENUM ('NORMAL', 'VIP');
 -- 1. USUARIOS
 -- ============================================================
 CREATE TABLE usuarios (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    nombre      VARCHAR(100) NOT NULL,
-    rol         rol_usuario NOT NULL,
-    estado      estado_usuario NOT NULL DEFAULT 'ACTIVO',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    username      VARCHAR(50) NOT NULL UNIQUE,
+    nombre        VARCHAR(100) NOT NULL,
+    password_hash VARCHAR(255),
+    rol           rol_usuario NOT NULL,
+    estado        estado_usuario NOT NULL DEFAULT 'ACTIVO',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================
