@@ -9,6 +9,7 @@ import { CategoriasModule } from './categorias/categorias.module';
 import { ProductosModule } from './productos/productos.module';
 import { MesasModule } from './mesas/mesas.module';
 import { CajasModule } from './cajas/cajas.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { CajasModule } from './cajas/cajas.module';
     ProductosModule, // ← nuevo
     MesasModule,
     CajasModule,
+    RealtimeModule,
   ],
   controllers: [AppController],
   providers: [AppService],

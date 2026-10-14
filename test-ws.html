@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Prueba WebSocket — Restaurante</title>
+    <style>
+      body {
+        font-family: Consolas, monospace;
+        background: #1e1e2e;
+        color: #cdd6f4;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        color: #89b4fa;
+      }
+      #log {
+        background: #11111b;
+        padding: 12px;
+        border-radius: 8px;
+        min-height: 200px;
+        white-space: pre-wrap;
+      }
+      .ok {
+        color: #a6e3a1;
+      }
+      .err {
+        color: #f38ba8;
+      }
+      .info {
+        color: #f9e2af;
+      }
+      button {
+        padding: 8px 16px;
+        margin: 4px;
+        cursor: pointer;
+        background: #89b4fa;
+        border: none;
+        border-radius: 6px;
+        color: #1e1e2e;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>📡 Prueba WebSocket — Sistema Restaurante</h1>
+    <button onclick="conectar()">1. Conectar</button>
+    <button onclick="ping()">2. Enviar ping</button>
+    <button onclick="desconectar()">3. Desconectar</button>
+    <div id="log"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/socket.io@4.8.1/client-dist/socket.io.min.js"></script>
+
+    <script>
+      let socket = null;
+      const log = (msg, cls = "info") => {
+        const el = document.getElementById("log");
+        el.innerHTML += `<span class="${cls}">${new Date().toLocaleTimeString()} — ${msg}</span>\n`;
+      };
+
+      function conectar() {
+        log("Conectando a ws://localhost:3000 ...");
+        socket = io("http://localhost:3000", { transports: ["websocket"] });
+
+        socket.on("connect", () =>
+          log(`✅ CONECTADO — id: ${socket.id}`, "ok"),
+        );
+        socket.on("disconnect", () => log("❌ DESCONECTADO", "err"));
+        socket.on("pong", (data) =>
+          log(`🏓 PONG recibido: ${JSON.stringify(data)}`, "ok"),
+        );
+      }
+
+      function ping() {
+        if (!socket) return log('Primero presiona "Conectar"', "err");
+        log('→ Enviando ping { saludo: "hola cocina" }');
+        socket.emit("ping", { saludo: "hola cocina" }, (respuesta) => {
+          log(`🏓 ACK directo: ${JSON.stringify(respuesta)}`, "ok");
+        });
+      }
+
+      function desconectar() {
+        if (socket) {
+          socket.disconnect();
+          log("Desconexión solicitada");
+        }
+      }
+    </script>
+  </body>
+</html>
