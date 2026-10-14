@@ -10,6 +10,7 @@ import { ProductosModule } from './productos/productos.module';
 import { MesasModule } from './mesas/mesas.module';
 import { CajasModule } from './cajas/cajas.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { OrdenesModule } from './ordenes/ordenes.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { RealtimeModule } from './realtime/realtime.module';
     MesasModule,
     CajasModule,
     RealtimeModule,
+    OrdenesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

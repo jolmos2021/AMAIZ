@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cocina (test) — Recepción de comandas</title>
+    <style>
+      body {
+        font-family: Consolas, monospace;
+        background: #1e1e2e;
+        color: #cdd6f4;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        color: #f38ba8;
+      }
+      #estado {
+        padding: 8px;
+        margin-bottom: 12px;
+        background: #11111b;
+        border-radius: 8px;
+      }
+      .conectado {
+        color: #a6e3a1;
+      }
+      .desconectado {
+        color: #f38ba8;
+      }
+      .comanda {
+        background: #11111b;
+        border-left: 4px solid #f9e2af;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .codigo {
+        color: #f9e2af;
+        font-weight: bold;
+        font-size: 16px;
+      }
+      .meta {
+        color: #89b4fa;
+      }
+      .item {
+        margin: 6px 0 6px 12px;
+      }
+      .nota {
+        color: #f38ba8;
+      }
+      .total {
+        color: #a6e3a1;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🍳 COCINA (pantalla de prueba) — escuchando comandas</h1>
+    <div id="estado" class="desconectado">
+      Desconectado — abriendo conexión...
+    </div>
+    <div id="comandas"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/socket.io@4.8.1/client-dist/socket.io.min.js"></script>
+    <script>
+      const socket = io("http://localhost:3000", { transports: ["websocket"] });
+      const estado = document.getElementById("estado");
+
+      socket.on("connect", () => {
+        estado.textContent = "✅ Conectado como COCINA — esperando comandas...";
+        estado.className = "conectado";
+      });
+      socket.on("disconnect", () => {
+        estado.textContent =
+          "❌ Desconectado (¿se reinició el backend? Recarga la página)";
+        estado.className = "desconectado";
+      });
+
+      // 📡 EL EVENTO: llega cuando un mesero crea una orden en cualquier dispositivo
+      socket.on("orden:nueva", (payload) => {
+        const o = payload.orden;
+        const mesaTxt = o.mesa ? `Mesa ${o.mesa.numero}` : o.tipoConsumo;
+        const itemsHtml = payload.items
+          .map(
+            (it) => `
+    <div class="item">
+      ${it.cantidad} × ${it.nombre}
+      ${it.notas ? `<span class="nota">📝 ${it.notas}</span>` : ""}
+    </div>`,
+          )
+          .join("");
+        const total = payload.items.reduce(
+          (a, it) => a + it.precioUnitario * it.cantidad,
+          0,
+        );
+
+        const div = document.createElement("div");
+        div.className = "comanda";
+        div.innerHTML = `
+    <div class="codigo">${o.codigoOrden}</div>
+    <div class="meta">${mesaTxt} — mesero: ${o.mesero.nombre} — ${new Date(o.fechaCreacion).toLocaleTimeString()}</div>
+    ${itemsHtml}
+    <div class="total">TOTAL: $${total.toFixed(2)}</div>
+  `;
+        document.getElementById("comandas").prepend(div);
+      });
+    </script>
+  </body>
+</html>
