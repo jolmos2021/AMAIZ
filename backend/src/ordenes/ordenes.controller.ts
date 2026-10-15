@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   ParseIntPipe,
@@ -11,6 +12,8 @@ import {
 } from '@nestjs/common';
 import { OrdenesService } from './ordenes.service';
 import { CrearOrdenDto } from './dto/crear-orden.dto';
+import { CambiarEstadoItemDto } from './dto/cambiar-estado-item.dto';
+import { EstadoItem } from './entities/detalle-orden.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -21,11 +24,8 @@ import { RolUsuario } from '../usuarios/entities/usuario.entity';
 export class OrdenesController {
   constructor(private readonly ordenesService: OrdenesService) {}
 
-  /**
-   * EL endpoint del mesero: tomar la comanda.
-   * req.user (del token) identifica QUIÉN toma la orden —
-   * mismo patrón de "identidad = dato de negocio" que la caja.
-   */
+  // ==================== CREACIÓN ====================
+
   @Roles(RolUsuario.MESERO, RolUsuario.ADMINISTRADOR)
   @Post()
   crear(
@@ -35,14 +35,13 @@ export class OrdenesController {
     return this.ordenesService.crear(req.user.userId, dto);
   }
 
-  // Órdenes vivas — la consumirá la pantalla de cocina (3.3)
-  // y el mapa de mesas del mesero
+  // ==================== CONSULTAS ====================
+
   @Get('activas')
   listarActivas() {
     return this.ordenesService.listarActivas();
   }
 
-  // Rutas fijas ANTES de :id (regla del fix de 2.4c)
   @Get()
   listar(@Query('desde') desde?: string, @Query('hasta') hasta?: string) {
     return this.ordenesService.listar(
@@ -54,5 +53,48 @@ export class OrdenesController {
   @Get(':id')
   obtenerPorId(@Param('id', ParseIntPipe) id: number) {
     return this.ordenesService.obtenerPorId(id);
+  }
+
+  // ==================== FLUJO DE COCINA (Paso 3.3) ====================
+
+  // Avanzar un item: EN_PREPARACION / LISTO (cocina) o ENTREGADO (mesero)
+  @Roles(RolUsuario.COCINERO, RolUsuario.MESERO, RolUsuario.ADMINISTRADOR)
+  @Patch(':id/items/:itemId/estado')
+  cambiarEstadoItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+    @Request() req: { user: { rol: string } },
+    @Body() dto: CambiarEstadoItemDto,
+  ) {
+    return this.ordenesService.cambiarEstadoItem(
+      id,
+      itemId,
+      dto.estadoItem,
+      req.user.rol,
+    );
+  }
+
+  // Anular un item (cocina): devuelve stock, recalcula la orden
+  @Roles(RolUsuario.COCINERO, RolUsuario.ADMINISTRADOR)
+  @Patch(':id/items/:itemId/anular')
+  anularItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+  ) {
+    return this.ordenesService.anularItem(id, itemId);
+  }
+
+  // El mesero entrega la orden completa (debe estar LISTA)
+  @Roles(RolUsuario.MESERO, RolUsuario.ADMINISTRADOR)
+  @Patch(':id/entregar')
+  entregar(@Param('id', ParseIntPipe) id: number) {
+    return this.ordenesService.entregar(id);
+  }
+
+  // Anular la orden completa — EXCLUSIVO del administrador
+  @Roles(RolUsuario.ADMINISTRADOR)
+  @Patch(':id/anular')
+  anular(@Param('id', ParseIntPipe) id: number) {
+    return this.ordenesService.anular(id);
   }
 }

@@ -24,6 +24,28 @@ interface ProductoRow {
   disponible_menu_dia: boolean;
 }
 
+/** Fila de item con datos de producto (columnas snake_case del driver) */
+interface ItemRow {
+  id: number;
+  orden_id: number;
+  producto_id: number;
+  cantidad: number;
+  precio_unitario: number;
+  notas: string | null;
+  estado_item: EstadoItem;
+  producto_nombre: string;
+  maneja_inventario: boolean;
+}
+
+/** Fila de orden básica (para validaciones y eventos) */
+interface OrdenBasicaRow {
+  id: number;
+  codigo_orden: string;
+  estado: EstadoOrden;
+  mesa_id: number | null;
+  mesa_numero: number | null;
+}
+
 @Injectable()
 export class OrdenesService {
   constructor(
@@ -335,5 +357,349 @@ export class OrdenesService {
       resultado.push(await this.obtenerPorId(Number(fila.id)));
     }
     return resultado;
+  }
+
+  // ==================== FLUJO DE COCINA (Paso 3.3) ====================
+
+  /** Orden básica con mesa — para validaciones y emisión de eventos */
+  private async obtenerOrdenBasica(ordenId: number): Promise<OrdenBasicaRow> {
+    const filas: OrdenBasicaRow[] = await this.dataSource.query(
+      `SELECT o.id, o.codigo_orden, o.estado, o.mesa_id, m.numero AS mesa_numero
+         FROM ordenes o LEFT JOIN mesas m ON m.id = o.mesa_id
+        WHERE o.id = $1`,
+      [ordenId],
+    );
+    if (!filas || filas.length === 0) {
+      throw new NotFoundException(`No existe la orden ${ordenId}`);
+    }
+    return filas[0];
+  }
+
+  /** Item con info de producto — base de las operaciones de cocina */
+  private async obtenerItem(itemId: number, ordenId: number): Promise<ItemRow> {
+    const filas: ItemRow[] = await this.dataSource.query(
+      `SELECT d.id, d.orden_id, d.producto_id, d.cantidad, d.precio_unitario,
+              d.notas, d.estado_item, p.nombre AS producto_nombre,
+              p.maneja_inventario
+         FROM detalle_orden d JOIN productos p ON p.id = d.producto_id
+        WHERE d.id = $1 AND d.orden_id = $2`,
+      [itemId, ordenId],
+    );
+    if (!filas || filas.length === 0) {
+      throw new NotFoundException(
+        `No existe el item ${itemId} en la orden ${ordenId}`,
+      );
+    }
+    return filas[0];
+  }
+
+  /**
+   * Recalcula el estado de la orden tras cambios en sus items:
+   *  - hay items activos y orden CREADA → PROCESANDO
+   *  - todos los items terminales → LISTA (dispara orden:lista)
+   *  - TODOS los items anulados → la orden se anula sola
+   */
+  private async recalcularEstadoOrden(
+    ordenId: number,
+    estadoActual: EstadoOrden,
+  ): Promise<{ nuevoEstado: EstadoOrden | null; esLista: boolean }> {
+    const conteos: { estado_item: EstadoItem; n: number }[] =
+      await this.dataSource.query(
+        `SELECT estado_item, COUNT(*)::int AS n
+           FROM detalle_orden WHERE orden_id = $1 GROUP BY estado_item`,
+        [ordenId],
+      );
+
+    const activos = conteos
+      .filter(
+        (c) =>
+          c.estado_item === EstadoItem.PENDIENTE ||
+          c.estado_item === EstadoItem.EN_PREPARACION,
+      )
+      .reduce((acc, c) => acc + c.n, 0);
+
+    if (activos > 0) {
+      if (estadoActual === EstadoOrden.CREADA) {
+        await this.dataSource.query(
+          `UPDATE ordenes SET estado = 'PROCESANDO' WHERE id = $1`,
+          [ordenId],
+        );
+        return { nuevoEstado: EstadoOrden.PROCESANDO, esLista: false };
+      }
+      return { nuevoEstado: null, esLista: false };
+    }
+
+    // Todos los items en estado terminal
+    const total = conteos.reduce((acc, c) => acc + c.n, 0);
+    const anulados =
+      conteos.find((c) => c.estado_item === EstadoItem.ANULADO)?.n ?? 0;
+
+    if (anulados === total) {
+      // La orden quedó vacía: se anula sola
+      await this.dataSource.query(
+        `UPDATE ordenes SET estado = 'ANULADA' WHERE id = $1`,
+        [ordenId],
+      );
+      return { nuevoEstado: EstadoOrden.ANULADA, esLista: false };
+    }
+
+    if (
+      estadoActual === EstadoOrden.CREADA ||
+      estadoActual === EstadoOrden.PROCESANDO
+    ) {
+      await this.dataSource.query(
+        `UPDATE ordenes SET estado = 'LISTA' WHERE id = $1`,
+        [ordenId],
+      );
+      return { nuevoEstado: EstadoOrden.LISTA, esLista: true };
+    }
+    return { nuevoEstado: null, esLista: false };
+  }
+
+  /** Emite orden:estado (y orden:lista si corresponde) tras un cambio */
+  private emitirEventosOrden(
+    orden: OrdenBasicaRow,
+    estadoAnterior: EstadoOrden,
+    rec: { nuevoEstado: EstadoOrden | null; esLista: boolean },
+  ): void {
+    if (!rec.nuevoEstado) return;
+    const mesa = orden.mesa_id
+      ? { id: Number(orden.mesa_id), numero: orden.mesa_numero }
+      : null;
+    this.realtime.emitirAHouse('orden:estado', {
+      ordenId: Number(orden.id),
+      codigoOrden: orden.codigo_orden,
+      estadoAnterior,
+      estado: rec.nuevoEstado,
+      mesa,
+    });
+    if (rec.esLista) {
+      this.realtime.emitirAHouse('orden:lista', {
+        ordenId: Number(orden.id),
+        codigoOrden: orden.codigo_orden,
+        mesa,
+      });
+    }
+  }
+
+  /** Avanza el estado de un item (cocina o mesero según transición) */
+  async cambiarEstadoItem(
+    ordenId: number,
+    itemId: number,
+    nuevoEstado: EstadoItem,
+    rol: string,
+  ): Promise<any> {
+    // --- Capa 2 de defensa: el rol autorizado depende de la transición ---
+    if (
+      (nuevoEstado === EstadoItem.EN_PREPARACION ||
+        nuevoEstado === EstadoItem.LISTO) &&
+      rol !== RolUsuario.COCINERO &&
+      rol !== RolUsuario.ADMINISTRADOR
+    ) {
+      throw new ForbiddenException(
+        'Solo COCINA puede avanzar la preparación de items',
+      );
+    }
+    if (
+      nuevoEstado === EstadoItem.ENTREGADO &&
+      rol !== RolUsuario.MESERO &&
+      rol !== RolUsuario.ADMINISTRADOR
+    ) {
+      throw new ForbiddenException(
+        'Solo el MESERO marca la entrega de un item',
+      );
+    }
+    if (
+      nuevoEstado === EstadoItem.ANULADO ||
+      nuevoEstado === EstadoItem.PENDIENTE
+    ) {
+      throw new BadRequestException(
+        'ANULADO se usa por el endpoint de anulación; PENDIENTE no se restaura',
+      );
+    }
+
+    const item = await this.obtenerItem(itemId, ordenId);
+    const orden = await this.obtenerOrdenBasica(ordenId);
+    if (
+      orden.estado === EstadoOrden.CERRADA ||
+      orden.estado === EstadoOrden.ANULADA
+    ) {
+      throw new BadRequestException(
+        `La orden ${orden.codigo_orden} está ${orden.estado} — no admite cambios`,
+      );
+    }
+
+    // --- Máquina de estados del item ---
+    const anterior = item.estado_item;
+    const transiciones: Record<string, EstadoItem[]> = {
+      [EstadoItem.PENDIENTE]: [EstadoItem.EN_PREPARACION, EstadoItem.LISTO],
+      [EstadoItem.EN_PREPARACION]: [EstadoItem.LISTO],
+      [EstadoItem.LISTO]: [EstadoItem.ENTREGADO],
+      [EstadoItem.ENTREGADO]: [],
+      [EstadoItem.ANULADO]: [],
+    };
+    if (!transiciones[anterior]?.includes(nuevoEstado)) {
+      throw new BadRequestException(
+        `Transición inválida: ${anterior} → ${nuevoEstado}`,
+      );
+    }
+
+    await this.dataSource.query(
+      `UPDATE detalle_orden SET estado_item = $1 WHERE id = $2`,
+      [nuevoEstado, itemId],
+    );
+
+    const rec = await this.recalcularEstadoOrden(ordenId, orden.estado);
+
+    this.realtime.emitirAHouse('item:estado', {
+      ordenId: Number(ordenId),
+      codigoOrden: orden.codigo_orden,
+      itemId: Number(itemId),
+      productoId: Number(item.producto_id),
+      nombre: item.producto_nombre,
+      estadoAnterior: anterior,
+      estadoItem: nuevoEstado,
+    });
+    this.emitirEventosOrden(orden, orden.estado, rec);
+
+    return this.obtenerPorId(ordenId);
+  }
+
+  /** Anula un item (cocina) — devuelve el stock a inventario */
+  async anularItem(ordenId: number, itemId: number): Promise<any> {
+    const item = await this.obtenerItem(itemId, ordenId);
+    const orden = await this.obtenerOrdenBasica(ordenId);
+    if (
+      orden.estado === EstadoOrden.CERRADA ||
+      orden.estado === EstadoOrden.ANULADA ||
+      orden.estado === EstadoOrden.ENTREGADA
+    ) {
+      throw new BadRequestException(
+        `La orden ${orden.codigo_orden} está ${orden.estado} — no admite cambios`,
+      );
+    }
+
+    if (
+      item.estado_item !== EstadoItem.PENDIENTE &&
+      item.estado_item !== EstadoItem.EN_PREPARACION
+    ) {
+      throw new BadRequestException(
+        `Solo se anulan items PENDIENTES o EN_PREPARACION (actual: ${item.estado_item})`,
+      );
+    }
+
+    // Restaurar stock (suma atómica — sin riesgo de carreras)
+    if (item.maneja_inventario) {
+      await this.dataSource.query(
+        `UPDATE productos SET stock_actual = stock_actual + $1 WHERE id = $2`,
+        [item.cantidad, item.producto_id],
+      );
+    }
+
+    await this.dataSource.query(
+      `UPDATE detalle_orden SET estado_item = 'ANULADO' WHERE id = $1`,
+      [itemId],
+    );
+
+    const rec = await this.recalcularEstadoOrden(ordenId, orden.estado);
+
+    this.realtime.emitirAHouse('item:estado', {
+      ordenId: Number(ordenId),
+      codigoOrden: orden.codigo_orden,
+      itemId: Number(itemId),
+      productoId: Number(item.producto_id),
+      nombre: item.producto_nombre,
+      estadoAnterior: item.estado_item,
+      estadoItem: EstadoItem.ANULADO,
+    });
+    this.emitirEventosOrden(orden, orden.estado, rec);
+
+    return this.obtenerPorId(ordenId);
+  }
+
+  /** El mesero entrega la orden completa (debe estar LISTA) */
+  async entregar(ordenId: number): Promise<any> {
+    const orden = await this.obtenerOrdenBasica(ordenId);
+    if (orden.estado !== EstadoOrden.LISTA) {
+      throw new BadRequestException(
+        `Solo se entregan órdenes LISTA (estado actual: ${orden.estado})`,
+      );
+    }
+
+    await this.dataSource.query(
+      `UPDATE detalle_orden SET estado_item = 'ENTREGADO'
+        WHERE orden_id = $1 AND estado_item = 'LISTO'`,
+      [ordenId],
+    );
+    await this.dataSource.query(
+      `UPDATE ordenes SET estado = 'ENTREGADA' WHERE id = $1`,
+      [ordenId],
+    );
+
+    this.emitirEventosOrden(orden, orden.estado, {
+      nuevoEstado: EstadoOrden.ENTREGADA,
+      esLista: false,
+    });
+
+    return this.obtenerPorId(ordenId);
+  }
+
+  /** Anula la orden completa (admin) — restaura stock y libera la mesa */
+  async anular(ordenId: number): Promise<any> {
+    const orden = await this.obtenerOrdenBasica(ordenId);
+    if (
+      orden.estado === EstadoOrden.CERRADA ||
+      orden.estado === EstadoOrden.ANULADA ||
+      orden.estado === EstadoOrden.ENTREGADA
+    ) {
+      throw new BadRequestException(
+        `Una orden ${orden.estado} no se puede anular` +
+          (orden.estado === EstadoOrden.ENTREGADA
+            ? ' (fue entregada — se resuelve al cobrar)'
+            : ''),
+      );
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      // Restaurar stock de items aún no anulados que manejan inventario
+      const items: ItemRow[] = await manager.query(
+        `SELECT d.id, d.orden_id, d.producto_id, d.cantidad, d.precio_unitario,
+                d.notas, d.estado_item, p.nombre AS producto_nombre,
+                p.maneja_inventario
+           FROM detalle_orden d JOIN productos p ON p.id = d.producto_id
+          WHERE d.orden_id = $1`,
+        [ordenId],
+      );
+      for (const it of items) {
+        if (it.estado_item !== EstadoItem.ANULADO && it.maneja_inventario) {
+          await manager.query(
+            `UPDATE productos SET stock_actual = stock_actual + $1 WHERE id = $2`,
+            [it.cantidad, it.producto_id],
+          );
+        }
+      }
+      await manager.query(
+        `UPDATE detalle_orden SET estado_item = 'ANULADO'
+          WHERE orden_id = $1 AND estado_item <> 'ANULADO'`,
+        [ordenId],
+      );
+      await manager.query(
+        `UPDATE ordenes SET estado = 'ANULADA' WHERE id = $1`,
+        [ordenId],
+      );
+      if (orden.mesa_id) {
+        await manager.query(
+          `UPDATE mesas SET estado = 'LIBRE' WHERE id = $1 AND estado = 'OCUPADA'`,
+          [orden.mesa_id],
+        );
+      }
+    });
+
+    this.emitirEventosOrden(orden, orden.estado, {
+      nuevoEstado: EstadoOrden.ANULADA,
+      esLista: false,
+    });
+
+    return this.obtenerPorId(ordenId);
   }
 }

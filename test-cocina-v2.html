@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cocina v2 — Flujo de trabajo</title>
+    <style>
+      body {
+        font-family: Consolas, monospace;
+        background: #1e1e2e;
+        color: #cdd6f4;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        color: #f38ba8;
+      }
+      #estado {
+        padding: 8px;
+        margin-bottom: 12px;
+        background: #11111b;
+        border-radius: 8px;
+      }
+      .conectado {
+        color: #a6e3a1;
+      }
+      .desconectado {
+        color: #f38ba8;
+      }
+      .aviso {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: #f9e2af;
+        color: #11111b;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-weight: bold;
+        display: none;
+        max-width: 40%;
+      }
+      .orden {
+        background: #11111b;
+        border-left: 4px solid #89b4fa;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 14px;
+      }
+      .orden.LISTA {
+        border-left-color: #a6e3a1;
+      }
+      .orden.ENTREGADA {
+        opacity: 0.5;
+      }
+      .codigo {
+        color: #f9e2af;
+        font-weight: bold;
+        font-size: 16px;
+      }
+      .codigo small {
+        color: #89b4fa;
+      }
+      .meta {
+        color: #89b4fa;
+        margin-bottom: 6px;
+      }
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 6px 0 6px 12px;
+        flex-wrap: wrap;
+      }
+      .nota {
+        color: #f38ba8;
+      }
+      .estado-item {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+      .PENDIENTE {
+        background: #45475a;
+      }
+      .EN_PREPARACION {
+        background: #f9e2af;
+        color: #11111b;
+      }
+      .LISTO {
+        background: #a6e3a1;
+        color: #11111b;
+      }
+      .ENTREGADO,
+      .ANULADO {
+        background: #6c7086;
+        color: #11111b;
+      }
+      button {
+        padding: 4px 10px;
+        cursor: pointer;
+        border: none;
+        border-radius: 6px;
+        font-weight: bold;
+        font-family: inherit;
+      }
+      .btn-preparar {
+        background: #f9e2af;
+      }
+      .btn-listo {
+        background: #a6e3a1;
+      }
+      .btn-anular {
+        background: #f38ba8;
+      }
+      .vacio {
+        color: #6c7086;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🍳 COCINA v2 — flujo de trabajo en tiempo real</h1>
+    <div id="estado" class="desconectado">Iniciando sesión...</div>
+    <div class="aviso" id="aviso"></div>
+    <div id="ordenes"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/socket.io@4.8.1/client-dist/socket.io.min.js"></script>
+    <script>
+      let token = null;
+      let socket = null;
+
+      const credenciales = { username: "mgomez", password: "Cocina123!" };
+      const API = "http://localhost:3000/api";
+
+      function aviso(texto) {
+        const el = document.getElementById("aviso");
+        el.textContent = texto;
+        el.style.display = "block";
+        setTimeout(() => (el.style.display = "none"), 5000);
+      }
+
+      // 1. Login automático como cocinero
+      fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(credenciales),
+      })
+        .then((r) => r.json())
+        .then(async (res) => {
+          token = res.accessToken;
+          document.getElementById("estado").textContent =
+            "✅ Sesión iniciada (cocinero) — conectando WebSocket...";
+
+          // 2. Conexión WebSocket
+          socket = io("http://localhost:3000", { transports: ["websocket"] });
+          socket.on("connect", () => {
+            document.getElementById("estado").textContent =
+              "✅ Conectado como COCINA — en vivo";
+            document.getElementById("estado").className = "conectado";
+          });
+          socket.on("disconnect", () => {
+            document.getElementById("estado").textContent =
+              "❌ Desconectado — recargue la página";
+            document.getElementById("estado").className = "desconectado";
+          });
+
+          // 3. Eventos → recargar TODO (simple y confiable)
+          socket.on("orden:nueva", (p) => {
+            aviso(`🆕 Nueva comanda: ${p.orden.codigoOrden}`);
+            cargarOrdenes();
+          });
+          socket.on("item:estado", () => cargarOrdenes());
+          socket.on("orden:estado", () => cargarOrdenes());
+          socket.on("orden:lista", (p) => {
+            aviso(`🔔 ${p.codigoOrden} LISTA — avisar al mesero`);
+          });
+
+          // 4. Carga inicial de órdenes activas
+          await cargarOrdenes();
+        })
+        .catch(() => {
+          document.getElementById("estado").textContent =
+            "❌ Falló el login — ¿creaste el usuario mgomez? (PASO 1)";
+        });
+
+      async function cargarOrdenes() {
+        const r = await fetch(`${API}/ordenes/activas`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const ordenes = await r.json();
+        const cont = document.getElementById("ordenes");
+        cont.innerHTML = "";
+
+        if (!ordenes || ordenes.length === 0) {
+          cont.innerHTML =
+            '<div class="vacio">Sin órdenes activas — descanso 🍵</div>';
+          return;
+        }
+        for (const o of ordenes) cont.appendChild(renderOrden(o));
+      }
+
+      function renderOrden(o) {
+        const div = document.createElement("div");
+        div.className = `orden ${o.estado}`;
+
+        const mesaTxt = o.mesa ? `Mesa ${o.mesa.numero}` : o.tipoConsumo;
+        const itemsHtml = o.items
+          .map((it) => {
+            const botones = [];
+            if (it.estadoItem === "PENDIENTE") {
+              botones.push(
+                btnHtml(
+                  "Preparar",
+                  o.id,
+                  it.id,
+                  "EN_PREPARACION",
+                  "btn-preparar",
+                ),
+              );
+              botones.push(btnHtml("Listo", o.id, it.id, "LISTO", "btn-listo"));
+              botones.push(
+                btnHtml("Anular", o.id, it.id, "ANULAR", "btn-anular"),
+              );
+            } else if (it.estadoItem === "EN_PREPARACION") {
+              botones.push(btnHtml("Listo", o.id, it.id, "LISTO", "btn-listo"));
+              botones.push(
+                btnHtml("Anular", o.id, it.id, "ANULAR", "btn-anular"),
+              );
+            }
+            return `<div class="item">
+        <span>${it.cantidad} × ${it.nombre}</span>
+        ${it.notas ? `<span class="nota">📝 ${it.notas}</span>` : ""}
+        <span class="estado-item ${it.estadoItem}">${it.estadoItem}</span>
+        ${botones.join("")}
+      </div>`;
+          })
+          .join("");
+
+        div.innerHTML = `
+    <div class="codigo">${o.codigoOrden} <small>(${o.estado})</small></div>
+    <div class="meta">${mesaTxt} — mesero: ${o.mesero.nombre} — ${new Date(o.fechaCreacion).toLocaleTimeString()}</div>
+    ${itemsHtml}
+  `;
+        return div;
+      }
+
+      function btnHtml(texto, ordenId, itemId, estado, clase) {
+        return `<button class="${clase}" onclick="accion(${ordenId}, ${itemId}, '${estado}')">${texto}</button>`;
+      }
+
+      async function accion(ordenId, itemId, estado) {
+        const url =
+          estado === "ANULAR"
+            ? `${API}/ordenes/${ordenId}/items/${itemId}/anular`
+            : `${API}/ordenes/${ordenId}/items/${itemId}/estado`;
+        const body =
+          estado === "ANULAR" ? null : JSON.stringify({ estadoItem: estado });
+
+        const r = await fetch(url, {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(body ? { "Content-Type": "application/json" } : {}),
+          },
+          body,
+        });
+
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          aviso(`⚠️ ${err.message || "Error " + r.status}`);
+        }
+        cargarOrdenes(); // refresco inmediato (el evento WebSocket también llegará)
+      }
+    </script>
+  </body>
+</html>
