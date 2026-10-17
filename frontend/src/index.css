@@ -1,0 +1,76 @@
+/* ══════════════════════════════════════════════════════════
+   SISTEMA DE DISEÑO — Amaiz · Mesero App
+   La IDENTIDAD COMPLETA vive en este bloque de variables.
+   ¿Cambiar la paleta en el futuro? Editas SOLO estas líneas
+   y toda la app (y las pantallas por venir) se recolorea sola.
+   ══════════════════════════════════════════════════════════ */
+:root {
+  /* ── Neutros (papel kraft) ── */
+  --fondo: #f7f1e2; /* página */
+  --tarjeta: #ffffff; /* tarjetas */
+  --tarjeta-2: #faf6ea; /* zonas interiores elevadas */
+  --borde: 1px solid #e6dcc2;
+  --tinta: #33301f; /* texto principal */
+  --tinta-2: #6e6650; /* texto secundario */
+  --tinta-3: #a79c7e; /* texto tenue */
+
+  /* ── Marca (logo Amaiz) ── */
+  --maiz: #e9b44c; /* amarillo maíz — acción principal */
+  --maiz-fuerte: #d69a26;
+  --maiz-texto: #7a5a10; /* amarillo legible sobre fondos claros */
+  --maiz-suave: rgba(233, 180, 76, 0.18);
+  --hoja: #5c8a3a; /* verde hoja — activo / éxito */
+  --hoja-texto: #3e6423;
+  --hoja-suave: rgba(92, 138, 58, 0.15);
+
+  /* ── Estados (listos para Mesas) ── */
+  --ok: #3e8e41;
+  --ok-suave: rgba(62, 142, 65, 0.12);
+  --ocupado: #c98a1b;
+  --ocupado-suave: rgba(201, 138, 27, 0.15);
+  --mal: #c0453e;
+  --mal-suave: rgba(192, 69, 62, 0.1);
+  --info: #3e7ec0;
+  --info-suave: rgba(62, 126, 192, 0.12);
+
+  /* ── Forma ── */
+  --radio-tarjeta: 20px;
+  --radio-boton: 14px;
+  --radio-input: 12px;
+  --sombra: 0 8px 24px rgba(82, 66, 30, 0.1);
+  --sombra-acento: 0 6px 16px rgba(214, 154, 38, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+}
+
+body {
+  background:
+    radial-gradient(
+      ellipse 90% 55% at 50% -10%,
+      var(--maiz-suave),
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 70% 45% at 88% 108%,
+      var(--hoja-suave),
+      transparent 55%
+    ),
+    var(--fondo);
+  color: var(--tinta);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
