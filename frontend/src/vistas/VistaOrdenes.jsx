@@ -56,6 +56,8 @@ export default function VistaOrdenes({
   mesaInicial,
   alConsumarMesaInicial,
 }) {
+  const token = sesion?.accessToken;
+  const usuario = sesion?.usuario;
   // ---- datos del backend ----
   const [menu, setMenu] = useState([]);
   const [mesas, setMesas] = useState([]);
