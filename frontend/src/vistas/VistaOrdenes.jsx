@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { io } from "socket.io-client";
 import {
   obtenerMesas,
   obtenerMenuDelDia,
   obtenerOrdenesActivas,
   crearOrden,
+  agregarItemsOrden,
   cambiarEstadoItem,
   anularItem,
   entregarOrden,
@@ -62,12 +63,35 @@ export default function VistaOrdenes({
   const [menu, setMenu] = useState([]);
   const [mesas, setMesas] = useState([]);
   const [ordenes, setOrdenes] = useState([]);
+  const ordenDestinoRef = useRef(null);
+  const [mesaDestinoId, setMesaDestinoId] = useState(null);
+  const [seccionMovil, setSeccionMovil] = useState("comanda");
+
+  useEffect(() => {
+    if (
+      mesaDestinoId === null ||
+      seccionMovil !== "activas" ||
+      !ordenDestinoRef.current
+    ) {
+      return;
+    }
+
+    ordenDestinoRef.current.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+
+    setMesaDestinoId(null);
+  }, [mesaDestinoId, ordenes, seccionMovil]);
   const [cargando, setCargando] = useState(true);
 
   // ---- comanda en construcción ----
   const [tipoConsumo, setTipoConsumo] = useState("MESA");
   const [mesaElegida, setMesaElegida] = useState(null);
   const [carrito, setCarrito] = useState([]);
+  const [carritoMovilAbierto, setCarritoMovilAbierto] = useState(false);
+  const [categoriaAbierta, setCategoriaAbierta] = useState(null);
+  const [ordenParaAgregar, setOrdenParaAgregar] = useState(null);
   const [enviando, setEnviando] = useState(false);
 
   // ---- avisos y conexión ----
@@ -106,9 +130,16 @@ export default function VistaOrdenes({
   useEffect(() => {
     if (!mesaInicial || mesas.length === 0) return;
     const m = mesas.find((x) => Number(x.id) === Number(mesaInicial.id));
-    if (m && m.estado !== "OCUPADA") {
-      setTipoConsumo("MESA");
-      setMesaElegida(Number(m.id));
+    if (m) {
+      if (m.estado === "OCUPADA") {
+        setSeccionMovil("activas");
+        setMesaDestinoId(Number(m.id));
+      } else {
+        setSeccionMovil("comanda");
+        setMesaDestinoId(null);
+        setTipoConsumo("MESA");
+        setMesaElegida(Number(m.id));
+      }
     }
     alConsumarMesaInicial?.(); // le avisamos al Dashboard que ya la usamos
   }, [mesaInicial, mesas, alConsumarMesaInicial]);
@@ -120,6 +151,7 @@ export default function VistaOrdenes({
     socket.on("disconnect", () => setEnVivo(false));
     const refrescar = () => recargar();
     socket.on("orden:nueva", refrescar);
+    socket.on("orden:items-agregados", refrescar);
     socket.on("orden:estado", refrescar);
     socket.on("orden:lista", refrescar);
     socket.on("item:estado", refrescar);
@@ -200,9 +232,21 @@ export default function VistaOrdenes({
     );
   };
 
+  // ==================== AGREGAR A ORDEN EXISTENTE ====================
+  const seleccionarOrdenParaAgregar = (orden) => {
+    setOrdenParaAgregar(orden);
+    setSeccionMovil("comanda");
+    setCarrito([]);
+    setAviso({
+      tipo: "ok",
+      texto: `Selecciona los productos que deseas agregar a ${orden.codigoOrden}`,
+    });
+  };
+
   // ==================== ENVIAR COMANDA ====================
   const enviarComanda = async () => {
     setAviso(null);
+
     if (carrito.length === 0) {
       setAviso({
         tipo: "mal",
@@ -210,35 +254,64 @@ export default function VistaOrdenes({
       });
       return;
     }
-    if (tipoConsumo === "MESA" && !mesaElegida) {
+
+    // Solo exigimos seleccionar mesa al crear una orden nueva.
+    if (!ordenParaAgregar && tipoConsumo === "MESA" && !mesaElegida) {
       setAviso({
         tipo: "mal",
         texto: "Elige la mesa para una orden de tipo MESA",
       });
       return;
     }
+
+    const items = carrito.map((l) => ({
+      productoId: l.productoId,
+      cantidad: l.cantidad,
+      notas: l.notas?.trim() ? l.notas.trim() : undefined,
+    }));
+
     setEnviando(true);
+
     try {
-      const orden = await crearOrden(token, {
-        tipoConsumo,
-        mesaId: tipoConsumo === "MESA" ? Number(mesaElegida) : undefined,
-        items: carrito.map((l) => ({
-          productoId: l.productoId,
-          cantidad: l.cantidad,
-          notas: l.notas?.trim() ? l.notas.trim() : undefined,
-        })),
-      });
-      setCarrito([]);
-      setMesaElegida(null);
-      setAviso({
-        tipo: "ok",
-        texto:
-          `✅ ${orden.codigoOrden} enviada a cocina` +
-          (orden.mesa ? ` — Mesa ${orden.mesa.numero} ahora OCUPADA` : ""),
-      });
+      if (ordenParaAgregar) {
+        // Agregar productos a una orden existente.
+        const codigoOrden = ordenParaAgregar.codigoOrden;
+
+        await agregarItemsOrden(token, ordenParaAgregar.id, { items });
+
+        setCarrito([]);
+        setOrdenParaAgregar(null);
+        setMesaElegida(null);
+
+        setAviso({
+          tipo: "ok",
+          texto: `✅ Productos agregados correctamente a ${codigoOrden}`,
+        });
+      } else {
+        // Crear una orden nueva.
+        const orden = await crearOrden(token, {
+          tipoConsumo,
+          mesaId: tipoConsumo === "MESA" ? Number(mesaElegida) : undefined,
+          items,
+        });
+
+        setCarrito([]);
+        setMesaElegida(null);
+
+        setAviso({
+          tipo: "ok",
+          texto:
+            `✅ ${orden.codigoOrden} enviada a cocina` +
+            (orden.mesa ? ` — Mesa ${orden.mesa.numero} ahora OCUPADA` : ""),
+        });
+      }
+
       await recargar();
     } catch (e) {
-      setAviso({ tipo: "mal", texto: e.message });
+      setAviso({
+        tipo: "mal",
+        texto: e.message,
+      });
     } finally {
       setEnviando(false);
     }
@@ -344,11 +417,9 @@ export default function VistaOrdenes({
           {enVivo ? "🟢 En vivo" : "🔴 Sin conexión"}
         </span>
       </div>
-
       {aviso && (
         <div className={`orden-banner ${aviso.tipo}`}>{aviso.texto}</div>
       )}
-
       <div className="orden-stats">
         <div className="orden-stat">
           <b>{ordenes.length}</b>
@@ -363,237 +434,370 @@ export default function VistaOrdenes({
           <span>Listas</span>
         </div>
       </div>
+      <div className="ordenes-selector-movil">
+        <button
+          type="button"
+          className={seccionMovil === "comanda" ? "activo" : ""}
+          onClick={() => setSeccionMovil("comanda")}
+        >
+          📝 Nueva comanda
+        </button>
 
-      {/* ==================== NUEVA COMANDA ==================== */}
-      <div className="comanda-card">
-        <h3>📝 Nueva comanda</h3>
-
-        <div className="tipo-tabs">
-          {TIPOS_CONSUMO.map((t) => (
-            <button
-              key={t.valor}
-              className={`tipo-tab ${tipoConsumo === t.valor ? "activa" : ""}`}
-              onClick={() => {
-                setTipoConsumo(t.valor);
-                setMesaElegida(null);
-              }}
-            >
-              {t.etiqueta}
-            </button>
-          ))}
-        </div>
-
-        {tipoConsumo === "MESA" && (
-          <div className="mesa-picker">
-            {mesas.length === 0 && (
-              <p className="orden-suave">No hay mesas parametrizadas.</p>
-            )}
-            {mesas.map((m) => {
-              const seleccionada = Number(mesaElegida) === Number(m.id);
-              const bloqueada = m.estado === "OCUPADA";
-              return (
-                <button
-                  key={m.id}
-                  className={`mesa-chip ${seleccionada ? "seleccionada" : ""} ${
-                    bloqueada ? "bloqueada" : ""
-                  }`}
-                  disabled={bloqueada}
-                  onClick={() => setMesaElegida(seleccionada ? null : m.id)}
-                >
-                  <b>Mesa {m.numero}</b>
-                  <span>{bloqueada ? "OCUPADA" : m.estado}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {cargando ? (
-          <p className="orden-suave">Cargando menú…</p>
-        ) : menu.length === 0 ? (
-          <p className="orden-suave">
-            El menú del día está vacío (¿sembraste los productos en la Prueba
-            1?)
-          </p>
-        ) : (
-          porCategoria.map(([categoria, productos]) => (
-            <div key={categoria} className="menu-cat">
-              <h4 className="menu-cat-titulo">{categoria}</h4>
-              {productos.map((p) => {
-                const enCarrito = carrito.find(
-                  (l) => l.productoId === Number(p.id),
-                );
-                const sinStock = p.manejaInventario && p.stockActual <= 0;
-                return (
-                  <div
-                    key={p.id}
-                    className={`menu-prod ${sinStock ? "agotado" : ""}`}
-                  >
-                    <div className="prod-info">
-                      <span className="prod-nombre">{p.nombre}</span>
-                      <span className="prod-detalles">
-                        {pesos(p.precio)}
-                        {p.manejaInventario && (
-                          <em className="stock-badge">
-                            stock: {p.stockActual}
-                          </em>
-                        )}
-                      </span>
-                    </div>
-                    {sinStock ? (
-                      <span className="stock-badge mal">agotado</span>
-                    ) : (
-                      <button
-                        className="btn-anadir"
-                        onClick={() => agregarAlCarrito(p)}
-                      >
-                        {enCarrito ? `＋ (${enCarrito.cantidad})` : "＋ Añadir"}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))
-        )}
-
-        {carrito.length > 0 && (
-          <div className="carrito">
-            <h4>
-              🛒 Comanda en curso
-              {tipoConsumo === "MESA" && numeroMesaElegida
-                ? ` — Mesa ${numeroMesaElegida}`
-                : tipoConsumo !== "MESA"
-                  ? ` — ${tipoConsumo.toLowerCase()}`
-                  : ""}
-            </h4>
-            {carrito.map((l) => (
-              <div key={l.productoId} className="carrito-linea">
-                <div className="linea-info">
-                  <span className="linea-nombre">{l.nombre}</span>
-                  <span className="linea-sub">{pesos(l.precio)} c/u</span>
-                </div>
-                <div className="qty-controles">
-                  <button onClick={() => cambiarCantidad(l.productoId, -1)}>
-                    −
-                  </button>
-                  <b>{l.cantidad}</b>
-                  <button onClick={() => cambiarCantidad(l.productoId, +1)}>
-                    ＋
-                  </button>
-                </div>
-                <input
-                  className="notas-input"
-                  placeholder="Notas (ej: sin cebolla)"
-                  value={l.notas}
-                  maxLength={300}
-                  onChange={(e) => cambiarNotas(l.productoId, e.target.value)}
-                />
-                <span className="linea-total">
-                  {pesos(l.precio * l.cantidad)}
-                </span>
-              </div>
-            ))}
-            <div className="carrito-pie">
-              <span className="carrito-total">
-                Total: <b>{pesos(total)}</b>
-              </span>
-              <button
-                className="btn-enviar"
-                onClick={enviarComanda}
-                disabled={enviando}
-              >
-                {enviando ? "Enviando…" : "🚀 Enviar a cocina"}
-              </button>
-            </div>
-          </div>
-        )}
+        <button
+          type="button"
+          className={seccionMovil === "activas" ? "activo" : ""}
+          onClick={() => setSeccionMovil("activas")}
+        >
+          🔥 Órdenes activas
+        </button>
       </div>
+      <div className="ordenes-layout">
+        <div
+          className={`ordenes-panel-derecho ${
+            seccionMovil === "comanda" ? "movil-visible" : "movil-oculto"
+          }`}
+        >
+          {/* ==================== NUEVA COMANDA ==================== */}
+          <div className="comanda-card">
+            <h3>
+              {ordenParaAgregar
+                ? `➕ Agregar productos a ${ordenParaAgregar.codigoOrden}`
+                : "📋 Nueva comanda"}
+            </h3>
 
-      {/* ==================== ÓRDENES ACTIVAS ==================== */}
-      <div className="ordenes-seccion">
-        <h3>🔥 Órdenes activas</h3>
-        {ordenes.length === 0 && (
-          <p className="orden-suave">
-            Sin órdenes activas — la primera que envíes aparecerá aquí.
-          </p>
-        )}
-        {ordenes.map((o) => (
-          <div key={o.id} className="orden-card">
-            <div className="orden-head">
-              <div>
-                <b>{o.codigoOrden}</b>
-                <span className="orden-sub">
-                  {o.mesa ? `Mesa ${o.mesa.numero}` : o.tipoConsumo} ·{" "}
-                  {o.mesero?.nombre ?? ""} · {formatearHora(o.fechaCreacion)}
-                </span>
-              </div>
-              <span
-                className={`estado-chip ${CLASE_ORDEN[o.estado] ?? "info"}`}
+            {ordenParaAgregar && (
+              <button
+                type="button"
+                className="btn-mini"
+                onClick={() => {
+                  setOrdenParaAgregar(null);
+                  setCarrito([]);
+                  setMesaElegida(null);
+                  setAviso(null);
+                }}
               >
-                {o.estado}
-              </span>
-            </div>
+                ✖ Cancelar selección
+              </button>
+            )}
 
-            <div className="orden-items">
-              {o.items.map((it) => (
-                <div key={it.id} className="item-linea">
-                  <span className="item-cant">×{it.cantidad}</span>
-                  <span className="item-nombre">{it.nombre}</span>
-                  {it.notas && <em className="item-notas">“{it.notas}”</em>}
-                  <span
-                    className={`item-chip ${CLASE_ITEM[it.estadoItem] ?? "info"}`}
-                  >
-                    {it.estadoItem}
-                  </span>
-                  {botonesItem(o, it)}
-                </div>
-              ))}
-            </div>
-
-            <div className="orden-pie">
-              <span>
-                Total: <b>{pesos(o.total)}</b>
-              </span>
-              <div className="orden-acciones">
-                {o.estado === "LISTA" && (esAdmin || esMesero) && (
-                  <button
-                    className="btn-mini ok"
-                    onClick={() =>
-                      accionOrden(
-                        () => entregarOrden(token, o.id),
-                        `✅ ${o.codigoOrden} entregada`,
-                      )
-                    }
-                  >
-                    ✅ Entregar
-                  </button>
-                )}
-                {esAdmin &&
-                  ["CREADA", "PROCESANDO", "LISTA"].includes(o.estado) && (
+            {!ordenParaAgregar && (
+              <>
+                <div className="tipo-tabs">
+                  {TIPOS_CONSUMO.map((t) => (
                     <button
-                      className="btn-mini mal"
+                      key={t.valor}
+                      className={`tipo-tab ${tipoConsumo === t.valor ? "activa" : ""}`}
                       onClick={() => {
-                        if (
-                          window.confirm(
-                            `¿Anular ${o.codigoOrden}? Se devuelve el stock y la mesa queda LIBRE.`,
-                          )
-                        ) {
-                          accionOrden(
-                            () => anularOrden(token, o.id),
-                            `${o.codigoOrden} anulada — mesa liberada`,
-                          );
-                        }
+                        setTipoConsumo(t.valor);
+                        setMesaElegida(null);
                       }}
                     >
-                      🗑️ Anular
+                      {t.etiqueta}
                     </button>
-                  )}
+                  ))}
+                </div>
+
+                {tipoConsumo === "MESA" && (
+                  <div className="mesa-picker">
+                    {mesas.length === 0 && (
+                      <p className="orden-suave">
+                        No hay mesas parametrizadas.
+                      </p>
+                    )}
+
+                    {mesas.map((m) => {
+                      const seleccionada = Number(mesaElegida) === Number(m.id);
+                      const bloqueada = m.estado === "OCUPADA";
+
+                      return (
+                        <button
+                          key={m.id}
+                          className={`mesa-chip ${seleccionada ? "seleccionada" : ""} ${
+                            bloqueada ? "bloqueada" : ""
+                          }`}
+                          disabled={bloqueada}
+                          onClick={() =>
+                            setMesaElegida(seleccionada ? null : m.id)
+                          }
+                        >
+                          <b>Mesa {m.numero}</b>
+                          <span>{bloqueada ? "OCUPADA" : m.estado}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {cargando ? (
+              <p className="orden-suave">Cargando menú…</p>
+            ) : menu.length === 0 ? (
+              <p className="orden-suave">
+                El menú del día está vacío (¿sembraste los productos en la
+                Prueba 1?)
+              </p>
+            ) : (
+              porCategoria.map(([categoria, productos]) => (
+                <div key={categoria} className="menu-cat">
+                  <h4 className="menu-cat-titulo">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCategoriaAbierta(
+                          categoriaAbierta === categoria ? null : categoria,
+                        )
+                      }
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        cursor: "pointer",
+                        background: "transparent",
+                        border: "none",
+                        color: "inherit",
+                        font: "inherit",
+                        textAlign: "left",
+                        padding: "8px 0",
+                      }}
+                    >
+                      <span>{categoria}</span>
+                      <span>{categoriaAbierta === categoria ? "▼" : "▶"}</span>
+                    </button>
+                  </h4>
+                  {categoriaAbierta === categoria &&
+                    productos.map((p) => {
+                      const enCarrito = carrito.find(
+                        (l) => l.productoId === Number(p.id),
+                      );
+                      const sinStock = p.manejaInventario && p.stockActual <= 0;
+                      return (
+                        <div
+                          key={p.id}
+                          className={`menu-prod ${sinStock ? "agotado" : ""}`}
+                        >
+                          <div className="prod-info">
+                            <span className="prod-nombre">{p.nombre}</span>
+                            <span className="prod-detalles">
+                              {pesos(p.precio)}
+                              {p.manejaInventario && (
+                                <em className="stock-badge">
+                                  stock: {p.stockActual}
+                                </em>
+                              )}
+                            </span>
+                          </div>
+                          {sinStock ? (
+                            <span className="stock-badge mal">agotado</span>
+                          ) : (
+                            <button
+                              className="btn-anadir"
+                              onClick={() => agregarAlCarrito(p)}
+                            >
+                              {enCarrito
+                                ? `＋ (${enCarrito.cantidad})`
+                                : "＋ Añadir"}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              ))
+            )}
+
+            {carrito.length > 0 && (
+              <button
+                type="button"
+                className="carrito-movil-barra"
+                onClick={() => setCarritoMovilAbierto((actual) => !actual)}
+                aria-expanded={carritoMovilAbierto}
+                aria-controls="carrito-comanda"
+              >
+                <span>
+                  🛒 {carrito.reduce((suma, item) => suma + item.cantidad, 0)}{" "}
+                  productos
+                </span>
+                <strong>
+                  {pesos(total)} {carritoMovilAbierto ? "▼" : "▲"}
+                </strong>
+              </button>
+            )}
+
+            {carrito.length > 0 && (
+              <div
+                id="carrito-comanda"
+                className={`carrito ${carritoMovilAbierto ? "carrito-movil-abierto" : ""}`}
+              >
+                <h4>
+                  🛒 Comanda en curso
+                  {tipoConsumo === "MESA" && numeroMesaElegida
+                    ? ` — Mesa ${numeroMesaElegida}`
+                    : tipoConsumo !== "MESA"
+                      ? ` — ${tipoConsumo.toLowerCase()}`
+                      : ""}
+                </h4>
+                {carrito.map((l) => (
+                  <div key={l.productoId} className="carrito-linea">
+                    <div className="linea-info">
+                      <span className="linea-nombre">{l.nombre}</span>
+                      <span className="linea-sub">{pesos(l.precio)} c/u</span>
+                    </div>
+                    <div className="qty-controles">
+                      <button onClick={() => cambiarCantidad(l.productoId, -1)}>
+                        −
+                      </button>
+                      <b>{l.cantidad}</b>
+                      <button onClick={() => cambiarCantidad(l.productoId, +1)}>
+                        ＋
+                      </button>
+                    </div>
+                    <input
+                      className="notas-input"
+                      placeholder="Notas (ej: sin cebolla)"
+                      value={l.notas}
+                      maxLength={300}
+                      onChange={(e) =>
+                        cambiarNotas(l.productoId, e.target.value)
+                      }
+                    />
+                    <span className="linea-total">
+                      {pesos(l.precio * l.cantidad)}
+                    </span>
+                  </div>
+                ))}
+                <div className="carrito-pie">
+                  <span className="carrito-total">
+                    Total: <b>{pesos(total)}</b>
+                  </span>
+                  <button
+                    className="btn-enviar"
+                    onClick={enviarComanda}
+                    disabled={enviando}
+                  >
+                    {enviando
+                      ? "Enviando…"
+                      : ordenParaAgregar
+                        ? `➕ Agregar a ${ordenParaAgregar.codigoOrden}`
+                        : "🚀 Enviar a cocina"}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
+          </div>{" "}
+          {/* Cierra comanda-card */}
+        </div>{" "}
+        {/* Cierra ordenes-panel-derecho */}
+        <div
+          className={`ordenes-panel-izquierdo ${
+            seccionMovil === "activas" ? "movil-visible" : "movil-oculto"
+          }`}
+        >
+          {/* ==================== ÓRDENES ACTIVAS ==================== */}
+          <div className="ordenes-seccion">
+            <h3>🔥 Órdenes activas</h3>
+            {ordenes.length === 0 && (
+              <p className="orden-suave">
+                Sin órdenes activas — la primera que envíes aparecerá aquí.
+              </p>
+            )}
+            {ordenes.map((o) => (
+              <div
+                key={o.id}
+                ref={
+                  Number(o.mesa?.id) === mesaDestinoId ? ordenDestinoRef : null
+                }
+                className="orden-card"
+              >
+                <div className="orden-head">
+                  <div>
+                    <b>{o.codigoOrden}</b>
+                    <span className="orden-sub">
+                      {o.mesa ? `Mesa ${o.mesa.numero}` : o.tipoConsumo} ·{" "}
+                      {o.mesero?.nombre ?? ""} ·{" "}
+                      {formatearHora(o.fechaCreacion)}
+                    </span>
+                  </div>
+                  <span
+                    className={`estado-chip ${CLASE_ORDEN[o.estado] ?? "info"}`}
+                  >
+                    {o.estado}
+                  </span>
+                </div>
+
+                <div className="orden-items">
+                  {o.items.map((it) => (
+                    <div key={it.id} className="item-linea">
+                      <span className="item-cant">×{it.cantidad}</span>
+                      <span className="item-nombre">{it.nombre}</span>
+                      {it.notas && <em className="item-notas">“{it.notas}”</em>}
+                      <span
+                        className={`item-chip ${CLASE_ITEM[it.estadoItem] ?? "info"}`}
+                      >
+                        {it.estadoItem}
+                      </span>
+                      {botonesItem(o, it)}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="orden-pie">
+                  <span>
+                    Total: <b>{pesos(o.total)}</b>
+                  </span>
+                  <div className="orden-acciones">
+                    {(esAdmin || esMesero) &&
+                      ["CREADA", "PROCESANDO", "LISTA"].includes(o.estado) && (
+                        <button
+                          className="btn-mini"
+                          onClick={() => seleccionarOrdenParaAgregar(o)}
+                        >
+                          ➕ Agregar productos
+                        </button>
+                      )}
+                    {o.estado === "LISTA" && (esAdmin || esMesero) && (
+                      <button
+                        className="btn-mini ok"
+                        onClick={() =>
+                          accionOrden(
+                            () => entregarOrden(token, o.id),
+                            `✅ ${o.codigoOrden} entregada`,
+                          )
+                        }
+                      >
+                        ✅ Entregar
+                      </button>
+                    )}
+                    {esAdmin &&
+                      ["CREADA", "PROCESANDO", "LISTA"].includes(o.estado) && (
+                        <button
+                          className="btn-mini mal"
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `¿Anular ${o.codigoOrden}? Se devuelve el stock y la mesa queda LIBRE.`,
+                              )
+                            ) {
+                              accionOrden(
+                                () => anularOrden(token, o.id),
+                                `${o.codigoOrden} anulada — mesa liberada`,
+                              );
+                            }
+                          }}
+                        >
+                          🗑️ Anular
+                        </button>
+                      )}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>{" "}
+        {/* Cierra ordenes-panel-izquierdo */}
+      </div>{" "}
+      {/* Cierra ordenes-layout */}
     </div>
   );
 }

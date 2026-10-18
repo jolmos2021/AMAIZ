@@ -1170,6 +1170,46 @@ button:disabled {
 /* ============================================================
    ETAPA 4 — VISTA ÓRDENES (Amaiz)
    ============================================================ */
+/* ============================================================
+   AMAIZ — NUEVA DISTRIBUCIÓN DE ÓRDENES
+   ============================================================ */
+
+.ordenes-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 40%) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.ordenes-panel-izquierdo,
+.ordenes-panel-derecho {
+  min-width: 0;
+}
+
+.ordenes-panel-izquierdo {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.ordenes-panel-derecho {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+@media (max-width: 900px) {
+  .ordenes-panel-izquierdo,
+  .ordenes-panel-derecho {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+/* Adaptación para pantallas pequeñas */
+@media (max-width: 900px) {
+  .ordenes-layout {
+    grid-template-columns: 1fr;
+  }
+}
 .orden-vista {
   display: flex;
   flex-direction: column;
@@ -1381,12 +1421,25 @@ button:disabled {
 }
 
 .carrito {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+
+  width: 100%;
+  max-height: 360px;
+  overflow-y: auto;
+  box-sizing: border-box;
+
   margin-top: 14px;
   background: var(--fondo);
   border-radius: 14px;
   padding: 12px;
   border: 1.5px dashed var(--maiz);
+
+  box-shadow: 0 4px 14px rgba(51, 48, 31, 0.1);
 }
+
 .carrito h4 {
   margin: 0 0 8px;
   color: var(--tinta);
@@ -1629,5 +1682,203 @@ button:disabled {
   .notas-input {
     width: 100%;
     grid-column: 1 / -1;
+  }
+}
+
+/* Carrito compacto para celulares */
+.carrito-movil-barra {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .carrito-movil-barra {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 80px;
+    z-index: 110;
+
+    padding: 15px 18px;
+    background: var(--hoja);
+    color: #fff;
+    border-radius: 14px;
+
+    font-size: 0.95rem;
+    font-weight: 700;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  }
+
+  .carrito-movil-barra strong {
+    font-size: 1.05rem;
+    color: #fff;
+  }
+}
+
+/* Carrito desplegable en celulares */
+@media (max-width: 900px) {
+  .carrito {
+    display: none;
+  }
+
+  .carrito.carrito-movil-abierto {
+    display: block;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 145px;
+    z-index: 109;
+
+    width: auto;
+    max-height: 55vh;
+    overflow-y: auto;
+    margin: 0;
+
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  }
+}
+
+/* Espacio para el carrito flotante en celulares */
+@media (max-width: 900px) {
+  .orden-vista {
+    padding-bottom: 160px;
+  }
+}
+
+/* Controles táctiles del carrito móvil */
+@media (max-width: 900px) {
+  .carrito .qty-controles button {
+    width: 42px;
+    height: 42px;
+    min-width: 42px;
+    border-radius: 10px;
+    font-size: 1.2rem;
+  }
+
+  .carrito .qty-controles b {
+    min-width: 24px;
+    font-size: 1rem;
+  }
+
+  .carrito .notas-input {
+    min-height: 42px;
+    font-size: 16px;
+    box-sizing: border-box;
+  }
+
+  .carrito .btn-enviar {
+    min-height: 48px;
+    font-size: 1rem;
+  }
+}
+
+/* Órdenes activas adaptadas a celulares */
+@media (max-width: 900px) {
+  .orden-card {
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .orden-head {
+    flex-wrap: wrap;
+  }
+
+  .orden-head > div {
+    min-width: 0;
+  }
+
+  .orden-sub {
+    overflow-wrap: anywhere;
+    line-height: 1.5;
+  }
+
+  .item-nombre {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .orden-pie {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .orden-acciones {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .orden-acciones .btn-mini {
+    flex: 1 1 130px;
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+    text-align: center;
+  }
+}
+
+/* Navegación principal adaptada a celulares */
+@media (max-width: 900px) {
+  .tabs .tab {
+    min-height: 52px;
+    padding: 10px 6px;
+    box-sizing: border-box;
+    touch-action: manipulation;
+  }
+
+  .tabs .tab-icono {
+    font-size: 24px;
+  }
+
+  .tabs-interior {
+    gap: 8px;
+  }
+}
+/* Selector móvil: Nueva comanda / Órdenes activas */
+.ordenes-selector-movil {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .ordenes-selector-movil {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .ordenes-selector-movil button {
+    min-height: 48px;
+    padding: 10px 8px;
+    border: 1px solid rgba(51, 48, 31, 0.2);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--tinta);
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .ordenes-selector-movil button.activo {
+    background: var(--hoja);
+    color: #fff;
+    border-color: var(--hoja);
+  }
+}
+/* Mostrar solo la sección seleccionada en celulares */
+@media (max-width: 900px) {
+  .ordenes-layout .movil-oculto {
+    display: none;
+  }
+
+  .ordenes-layout .movil-visible {
+    display: block;
   }
 }

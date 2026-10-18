@@ -9,6 +9,7 @@ import { Repository, DataSource } from 'typeorm';
 import { Orden, TipoConsumo, EstadoOrden } from './entities/orden.entity';
 import { DetalleOrden, EstadoItem } from './entities/detalle-orden.entity';
 import { CrearOrdenDto } from './dto/crear-orden.dto';
+import { AgregarItemsOrdenDto } from './dto/agregar-items-orden.dto';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { EstadoMesa } from '../mesas/entities/mesa.entity';
 import { RolUsuario, EstadoUsuario } from '../usuarios/entities/usuario.entity';
@@ -261,6 +262,204 @@ export class OrdenesService {
     this.realtime.emitirAHouse('orden:nueva', payload);
 
     return this.obtenerPorId(Number(ordenGuardada.id));
+  }
+
+  // ==================== AGREGAR PRODUCTOS A ORDEN EXISTENTE ====================
+
+  async agregarItems(
+    ordenId: number,
+    meseroId: number,
+    dto: AgregarItemsOrdenDto,
+  ): Promise<any> {
+    const usuarios = await this.dataSource.query(
+      'SELECT id, nombre, rol, estado FROM usuarios WHERE id = $1',
+      [meseroId],
+    );
+
+    if (!usuarios || usuarios.length === 0) {
+      throw new NotFoundException('El usuario indicado no existe');
+    }
+
+    const usuario = usuarios[0];
+
+    if (usuario.estado !== EstadoUsuario.ACTIVO) {
+      throw new ForbiddenException('El usuario está INACTIVO');
+    }
+
+    if (
+      usuario.rol !== RolUsuario.MESERO &&
+      usuario.rol !== RolUsuario.ADMINISTRADOR
+    ) {
+      throw new ForbiddenException(
+        'Solo MESEROS o ADMINISTRADORES pueden agregar productos',
+      );
+    }
+
+    const orden = await this.obtenerOrdenBasica(ordenId);
+
+    if (
+      orden.estado === EstadoOrden.ENTREGADA ||
+      orden.estado === EstadoOrden.CERRADA ||
+      orden.estado === EstadoOrden.ANULADA
+    ) {
+      throw new BadRequestException(
+        `La orden ${orden.codigo_orden} está ${orden.estado} y no admite nuevos productos`,
+      );
+    }
+    const resultado = await this.dataSource.transaction(async (manager) => {
+      const ordenesBloqueadas = await manager.query(
+        `SELECT id, codigo_orden, estado
+     FROM ordenes
+    WHERE id = $1
+    FOR UPDATE`,
+        [ordenId],
+      );
+
+      if (ordenesBloqueadas.length === 0) {
+        throw new NotFoundException(`No existe la orden ${ordenId}`);
+      }
+
+      const ordenActual = ordenesBloqueadas[0];
+
+      if (
+        ordenActual.estado === EstadoOrden.ENTREGADA ||
+        ordenActual.estado === EstadoOrden.CERRADA ||
+        ordenActual.estado === EstadoOrden.ANULADA
+      ) {
+        throw new BadRequestException(
+          `La orden ${ordenActual.codigo_orden} está ${ordenActual.estado} y no admite nuevos productos`,
+        );
+      }
+      const productosIds = dto.items.map((item) => item.productoId);
+
+      const productos: ProductoRow[] = await manager.query(
+        `SELECT id, nombre, precio, maneja_inventario,
+          stock_actual, disponible_menu_dia
+     FROM productos
+    WHERE id = ANY($1::int[])`,
+        [productosIds],
+      );
+
+      const mapaProductos = new Map<number, ProductoRow>();
+
+      for (const producto of productos) {
+        mapaProductos.set(Number(producto.id), producto);
+      }
+
+      for (const item of dto.items) {
+        const producto = mapaProductos.get(item.productoId);
+
+        if (!producto) {
+          throw new BadRequestException(
+            `El producto ${item.productoId} no existe`,
+          );
+        }
+
+        if (!producto.disponible_menu_dia) {
+          throw new BadRequestException(
+            `El producto '${producto.nombre}' no está disponible en el menú del día`,
+          );
+        }
+      }
+      // Descontar inventario de forma atómica.
+      // Si algún producto no tiene stock suficiente,
+      // la transacción completa se revertirá.
+      for (const item of dto.items) {
+        const producto = mapaProductos.get(item.productoId);
+
+        if (!producto || !producto.maneja_inventario) {
+          continue;
+        }
+
+        const resultadoStock = await manager
+          .createQueryBuilder()
+          .update(Producto)
+          .set({ stockActual: () => 'stock_actual - :cantidad' })
+          .where(
+            'id = :id AND maneja_inventario = TRUE AND stock_actual >= :cantidad',
+            {
+              id: item.productoId,
+              cantidad: item.cantidad,
+            },
+          )
+          .execute();
+
+        if (!resultadoStock.affected) {
+          throw new BadRequestException(
+            `Stock insuficiente de '${producto.nombre}' para agregar ${item.cantidad} unidad(es)`,
+          );
+        }
+      }
+
+      // Insertar los nuevos productos en la orden existente.
+      const detallesAgregados: any[] = [];
+
+      for (const item of dto.items) {
+        const producto = mapaProductos.get(item.productoId);
+
+        if (!producto) {
+          throw new BadRequestException(
+            `El producto ${item.productoId} no existe`,
+          );
+        }
+
+        const filas = await manager.query(
+          `INSERT INTO detalle_orden
+       (orden_id, producto_id, cantidad, precio_unitario, notas, estado_item)
+     VALUES ($1, $2, $3, $4, $5, 'PENDIENTE')
+     RETURNING id, orden_id, producto_id, cantidad,
+               precio_unitario, notas, estado_item`,
+          [
+            ordenId,
+            item.productoId,
+            item.cantidad,
+            producto.precio,
+            item.notas ?? null,
+          ],
+        );
+
+        detallesAgregados.push({
+          ...filas[0],
+          nombreProducto: producto.nombre,
+        });
+      }
+
+      if (ordenActual.estado === EstadoOrden.LISTA) {
+        await manager.query(
+          `UPDATE ordenes
+        SET estado = 'PROCESANDO'
+      WHERE id = $1`,
+          [ordenId],
+        );
+      }
+
+      return {
+        ordenId,
+        cantidadItems: detallesAgregados.length,
+        detallesAgregados,
+      };
+    });
+
+    this.realtime.emitirAHouse('orden:items-agregados', {
+      ordenId: Number(ordenId),
+      codigoOrden: orden.codigo_orden,
+      cantidadItems: resultado.cantidadItems,
+      items: resultado.detallesAgregados,
+    });
+
+    if (orden.estado === EstadoOrden.LISTA) {
+      this.realtime.emitirAHouse('orden:estado', {
+        ordenId: Number(ordenId),
+        codigoOrden: orden.codigo_orden,
+        estadoAnterior: EstadoOrden.LISTA,
+        estado: EstadoOrden.PROCESANDO,
+        mesa: orden.mesa_id
+          ? { id: Number(orden.mesa_id), numero: orden.mesa_numero }
+          : null,
+      });
+    }
+
+    return resultado;
   }
 
   // ==================== CONSULTAS ====================
@@ -626,15 +825,36 @@ export class OrdenesService {
       );
     }
 
-    await this.dataSource.query(
-      `UPDATE detalle_orden SET estado_item = 'ENTREGADO'
-        WHERE orden_id = $1 AND estado_item = 'LISTO'`,
-      [ordenId],
-    );
-    await this.dataSource.query(
-      `UPDATE ordenes SET estado = 'ENTREGADA' WHERE id = $1`,
-      [ordenId],
-    );
+    await this.dataSource.transaction(async (manager) => {
+      const filasOrden = await manager.query(
+        `SELECT id, codigo_orden, estado
+       FROM ordenes
+      WHERE id = $1
+      FOR UPDATE`,
+        [ordenId],
+      );
+
+      if (filasOrden.length === 0) {
+        throw new NotFoundException(`No existe la orden ${ordenId}`);
+      }
+
+      if (filasOrden[0].estado !== EstadoOrden.LISTA) {
+        throw new BadRequestException(
+          `Solo se entregan órdenes LISTA (estado actual: ${filasOrden[0].estado})`,
+        );
+      }
+
+      await manager.query(
+        `UPDATE detalle_orden SET estado_item = 'ENTREGADO'
+      WHERE orden_id = $1 AND estado_item = 'LISTO'`,
+        [ordenId],
+      );
+
+      await manager.query(
+        `UPDATE ordenes SET estado = 'ENTREGADA' WHERE id = $1`,
+        [ordenId],
+      );
+    });
 
     this.emitirEventosOrden(orden, orden.estado, {
       nuevoEstado: EstadoOrden.ENTREGADA,
@@ -661,6 +881,29 @@ export class OrdenesService {
     }
 
     await this.dataSource.transaction(async (manager) => {
+      const filasOrden = await manager.query(
+        `SELECT id, codigo_orden, estado
+     FROM ordenes
+    WHERE id = $1
+    FOR UPDATE`,
+        [ordenId],
+      );
+
+      if (filasOrden.length === 0) {
+        throw new NotFoundException(`No existe la orden ${ordenId}`);
+      }
+
+      const estadoActual = filasOrden[0].estado as EstadoOrden;
+
+      if (
+        estadoActual === EstadoOrden.CERRADA ||
+        estadoActual === EstadoOrden.ANULADA ||
+        estadoActual === EstadoOrden.ENTREGADA
+      ) {
+        throw new BadRequestException(
+          `Una orden ${estadoActual} no se puede anular`,
+        );
+      }
       // Restaurar stock de items aún no anulados que manejan inventario
       const items: ItemRow[] = await manager.query(
         `SELECT d.id, d.orden_id, d.producto_id, d.cantidad, d.precio_unitario,

@@ -124,6 +124,13 @@ export const crearOrden = (token, dto) =>
     body: JSON.stringify(dto),
   });
 
+export const agregarItemsOrden = (token, ordenId, dto) =>
+  pedir(`${API_URL}/ordenes/${ordenId}/items`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(dto),
+  });
+
 export const avanzarItem = (token, ordenId, itemId, estadoItem) =>
   pedir(`${API_URL}/ordenes/${ordenId}/items/${itemId}/estado`, {
     method: "PATCH",

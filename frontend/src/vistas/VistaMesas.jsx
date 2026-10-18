@@ -447,6 +447,16 @@ export default function VistaMesas({ sesion, onTomarPedido }) {
             </p>
           )}
           <div className="fila">
+            {onTomarPedido &&
+              seleccion.estado === "OCUPADA" &&
+              (usuario.rol === "MESERO" || esAdmin) && (
+                <button
+                  className="primario"
+                  onClick={() => onTomarPedido(seleccion)}
+                >
+                  📋 Ver orden
+                </button>
+              )}
             {esAdmin && seleccion.estado === "LIBRE" && (
               <button
                 className="secundario"

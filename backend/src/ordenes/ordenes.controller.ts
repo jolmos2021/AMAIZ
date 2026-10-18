@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { OrdenesService } from './ordenes.service';
 import { CrearOrdenDto } from './dto/crear-orden.dto';
+import { AgregarItemsOrdenDto } from './dto/agregar-items-orden.dto';
 import { CambiarEstadoItemDto } from './dto/cambiar-estado-item.dto';
 import { EstadoItem } from './entities/detalle-orden.entity';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -33,6 +34,18 @@ export class OrdenesController {
     @Body() dto: CrearOrdenDto,
   ) {
     return this.ordenesService.crear(req.user.userId, dto);
+  }
+
+  // ==================== AGREGAR PRODUCTOS ====================
+
+  @Roles(RolUsuario.MESERO, RolUsuario.ADMINISTRADOR)
+  @Post(':id/items')
+  agregarItems(
+    @Param('id', ParseIntPipe) id: number,
+    @Request() req: { user: { userId: number; rol: string } },
+    @Body() dto: AgregarItemsOrdenDto,
+  ) {
+    return this.ordenesService.agregarItems(id, req.user.userId, dto);
   }
 
   // ==================== CONSULTAS ====================
