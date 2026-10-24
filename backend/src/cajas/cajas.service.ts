@@ -110,8 +110,31 @@ export class CajasService {
       usuarioId,
       estado: EstadoCaja.ABIERTA,
     });
-    const guardada = await this.repo.save(nueva);
-    return this.conCajero(guardada);
+    try {
+      const guardada = await this.repo.save(nueva);
+      return await this.conCajero(guardada);
+    } catch (error: unknown) {
+      const dbError = error as {
+        code?: string;
+        constraint?: string;
+        driverError?: {
+          code?: string;
+          constraint?: string;
+        };
+      };
+
+      const codigo = dbError.driverError?.code ?? dbError.code;
+
+      const restriccion = dbError.driverError?.constraint ?? dbError.constraint;
+
+      if (codigo === '23505' && restriccion === 'uq_cajas_unica_abierta') {
+        throw new ConflictException(
+          'Ya existe una caja abierta. Actualiza la pantalla antes de intentar nuevamente.',
+        );
+      }
+
+      throw error;
+    }
   }
 
   // ---------- Cierre ----------
@@ -122,71 +145,123 @@ export class CajasService {
     rol: string,
     dto: CerrarCajaDto,
   ): Promise<{ caja: CajaConCajero; detalle: DetalleCierreCaja }> {
-    const caja = await this.repo.findOne({ where: { id: cajaId } });
-    if (!caja) {
-      throw new NotFoundException(`No existe una caja con id ${cajaId}`);
-    }
-    if (caja.estado === EstadoCaja.CERRADA) {
-      throw new BadRequestException(`La caja ${cajaId} ya está cerrada`);
-    }
-
-    // REGLA 3: solo cierra quien abrió (o un ADMINISTRADOR)
-    // String() a ambos lados: los bigint llegan como string desde el driver
-    if (
-      String(caja.usuarioId) !== String(usuarioId) &&
-      rol !== RolUsuario.ADMINISTRADOR
-    ) {
-      throw new ForbiddenException(
-        'Solo puede cerrar la caja quien la abrió (o un administrador)',
+    const resultado = await this.dataSource.transaction(async (manager) => {
+      // 1. Bloquear la caja durante todo el cierre.
+      const filas = await manager.query(
+        `SELECT id, usuario_id, estado,
+                monto_inicial::text AS monto_inicial
+         FROM cajas
+         WHERE id = $1
+         FOR UPDATE`,
+        [cajaId],
       );
-    }
 
-    // REGLA 2: no se cierra caja con órdenes pendientes en la casa
-    const pendientes: { total: number }[] = await this.dataSource.query(
-      "SELECT COUNT(*)::int AS total FROM ordenes WHERE estado NOT IN ('CERRADA','ANULADA')",
-    );
-    const totalPendientes = pendientes[0]?.total ?? 0;
-    if (totalPendientes > 0) {
-      throw new BadRequestException(
-        `No se puede cerrar la caja: existen ${totalPendientes} órdenes pendientes`,
+      if (!filas.length) {
+        throw new NotFoundException(`No existe una caja con id ${cajaId}`);
+      }
+
+      const caja = filas[0];
+
+      if (caja.estado !== EstadoCaja.ABIERTA) {
+        throw new BadRequestException(`La caja ${cajaId} no está abierta`);
+      }
+
+      // 2. Validar quién puede cerrar la caja.
+      if (
+        String(caja.usuario_id) !== String(usuarioId) &&
+        rol !== RolUsuario.ADMINISTRADOR
+      ) {
+        throw new ForbiddenException(
+          'Solo puede cerrar la caja quien la abrió (o un administrador)',
+        );
+      }
+
+      // 3. Verificar órdenes pendientes.
+      const pendientes: { total: number }[] = await manager.query(
+        `SELECT COUNT(*)::int AS total
+           FROM ordenes
+           WHERE estado NOT IN ('CERRADA', 'ANULADA')`,
       );
-    }
 
-    // REGLA 4: monto_final lo calcula el sistema
-    const pagosRow: { total: number }[] = await this.dataSource.query(
-      'SELECT COALESCE(SUM(valor_pagado), 0)::float8 AS total FROM pagos WHERE caja_id = $1',
-      [cajaId],
-    );
-    const abonosRow: { total: number }[] = await this.dataSource.query(
-      'SELECT COALESCE(SUM(valor_abonado), 0)::float8 AS total FROM abonos_credito WHERE caja_id = $1',
-      [cajaId],
-    );
-    const totalPagos = Number(pagosRow[0]?.total ?? 0);
-    const totalAbonos = Number(abonosRow[0]?.total ?? 0);
-    const montoFinalCalculado = this.redondear(
-      caja.montoInicial + totalPagos + totalAbonos,
-    );
+      const totalPendientes = Number(pendientes[0]?.total ?? 0);
 
-    caja.fechaCierre = new Date();
-    caja.montoFinal = montoFinalCalculado;
-    caja.estado = EstadoCaja.CERRADA;
-    const cerrada = await this.repo.save(caja);
+      if (totalPendientes > 0) {
+        throw new BadRequestException(
+          `No se puede cerrar la caja: existen ${totalPendientes} órdenes pendientes`,
+        );
+      }
 
-    // REGLA 5: cuadre de caja (si el cajero declaró lo contado)
-    const detalle: DetalleCierreCaja = {
-      montoInicial: caja.montoInicial,
-      totalPagos: this.redondear(totalPagos),
-      totalAbonos: this.redondear(totalAbonos),
-      montoFinalCalculado,
+      // 4. Calcular los pagos de esta caja.
+      const pagos = await manager.query(
+        `SELECT COALESCE(
+           SUM(valor_pagado), 0
+         )::text AS total
+         FROM pagos
+         WHERE caja_id = $1`,
+        [cajaId],
+      );
+
+      // 5. Calcular los abonos a créditos.
+      const abonos = await manager.query(
+        `SELECT COALESCE(
+           SUM(valor_abonado), 0
+         )::text AS total
+         FROM abonos_credito
+         WHERE caja_id = $1`,
+        [cajaId],
+      );
+
+      const montoInicial = Number(caja.monto_inicial);
+      const totalPagos = Number(pagos[0]?.total ?? 0);
+      const totalAbonos = Number(abonos[0]?.total ?? 0);
+
+      const montoFinalCalculado = this.redondear(
+        montoInicial + totalPagos + totalAbonos,
+      );
+
+      // 6. Cerrar la caja dentro de la transacción.
+      const actualizadas = await manager.query(
+        `UPDATE cajas
+         SET estado = 'CERRADA',
+             fecha_cierre = NOW(),
+             monto_final = $2
+         WHERE id = $1
+           AND estado = 'ABIERTA'
+         RETURNING id`,
+        [cajaId, montoFinalCalculado.toFixed(2)],
+      );
+
+      if (!actualizadas.length) {
+        throw new ConflictException(
+          'La caja cambió de estado durante el cierre',
+        );
+      }
+
+      // 7. Preparar el detalle del cierre.
+      const detalle: DetalleCierreCaja = {
+        montoInicial,
+        totalPagos: this.redondear(totalPagos),
+        totalAbonos: this.redondear(totalAbonos),
+        montoFinalCalculado,
+      };
+
+      if (dto?.montoDeclarado !== undefined) {
+        detalle.montoDeclarado = dto.montoDeclarado;
+        detalle.diferencia = this.redondear(
+          dto.montoDeclarado - montoFinalCalculado,
+        );
+      }
+
+      return detalle;
+    });
+
+    // 8. Consultar la caja una vez confirmado el COMMIT.
+    const cajaCerrada = await this.obtenerPorId(cajaId);
+
+    return {
+      caja: cajaCerrada,
+      detalle: resultado,
     };
-    if (dto?.montoDeclarado !== undefined) {
-      detalle.montoDeclarado = dto.montoDeclarado;
-      detalle.diferencia = this.redondear(
-        dto.montoDeclarado - montoFinalCalculado,
-      );
-    }
-
-    return { caja: await this.conCajero(cerrada), detalle };
   }
 
   // ---------- Resumen en vivo (pantalla de caja / reportes) ----------
@@ -211,13 +286,13 @@ export class CajasService {
       pagosPorMetodoRaw.map((r: { metodo: string; total: number }) => ({
         metodo: r.metodo,
         total: this.redondear(Number(r.total)),
-    }));
+      }));
 
     const abonosPorMetodo: { metodo: string; total: number }[] =
       abonosPorMetodoRaw.map((r: { metodo: string; total: number }) => ({
         metodo: r.metodo,
         total: this.redondear(Number(r.total)),
-    }));
+      }));
 
     const totalPagos = pagosPorMetodo.reduce((acc, p) => acc + p.total, 0);
     const totalAbonos = abonosPorMetodo.reduce((acc, a) => acc + a.total, 0);
@@ -228,7 +303,9 @@ export class CajasService {
       abonosPorMetodo,
       totalPagos: this.redondear(totalPagos),
       totalAbonos: this.redondear(totalAbonos),
-      montoFinalEsperado: this.redondear(caja.montoInicial + totalPagos + totalAbonos),
+      montoFinalEsperado: this.redondear(
+        caja.montoInicial + totalPagos + totalAbonos,
+      ),
     };
   }
 }

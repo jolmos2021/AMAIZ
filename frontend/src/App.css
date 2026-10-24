@@ -1632,7 +1632,21 @@ button:disabled {
 
 .demo-item-acciones {
   display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .demo-item-acciones {
+    width: 100%;
+  }
+
+  .demo-item-acciones .btn-mini {
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+  }
 }
 .btn-mini {
   border: 1px solid rgba(51, 48, 31, 0.2);

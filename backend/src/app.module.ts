@@ -11,6 +11,7 @@ import { MesasModule } from './mesas/mesas.module';
 import { CajasModule } from './cajas/cajas.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { OrdenesModule } from './ordenes/ordenes.module';
+import { CobrosModule } from './cobros/cobros.module';
 
 @Module({
   imports: [

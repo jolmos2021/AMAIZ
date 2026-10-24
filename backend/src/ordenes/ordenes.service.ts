@@ -3,14 +3,16 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, EntityManager } from 'typeorm';
 import { Orden, TipoConsumo, EstadoOrden } from './entities/orden.entity';
 import { DetalleOrden, EstadoItem } from './entities/detalle-orden.entity';
 import { CrearOrdenDto } from './dto/crear-orden.dto';
 import { AgregarItemsOrdenDto } from './dto/agregar-items-orden.dto';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { CobrosService } from '../cobros/cobros.service';
 import { EstadoMesa } from '../mesas/entities/mesa.entity';
 import { RolUsuario, EstadoUsuario } from '../usuarios/entities/usuario.entity';
 import { Producto } from '../productos/entities/producto.entity';
@@ -57,7 +59,28 @@ export class OrdenesService {
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly realtime: RealtimeGateway,
+    private readonly cobrosService: CobrosService,
   ) {}
+
+  private async validarSinSubcuentas(
+    ordenId: number,
+    manager: EntityManager,
+  ): Promise<void> {
+    const filas: { existe: boolean }[] = await manager.query(
+      `SELECT EXISTS (
+       SELECT 1
+       FROM subcuentas
+       WHERE orden_id = $1
+     ) AS existe`,
+      [ordenId],
+    );
+
+    if (filas[0]?.existe) {
+      throw new ConflictException(
+        'La orden tiene una cuenta dividida. Debe deshacer la división antes de modificar sus productos o anular la orden.',
+      );
+    }
+  }
 
   // ==================== CREACIÓN DE LA COMANDA ====================
 
@@ -112,12 +135,29 @@ export class OrdenesService {
     // --- La transacción maestra ---
     const { ordenGuardada, detalles, nombreMesero } =
       await this.dataSource.transaction(async (manager) => {
+        // Coordinar la creación de órdenes con el cierre de caja.
+        // El bloqueo permanece activo hasta COMMIT o ROLLBACK.
+        const cajasAbiertas = await manager.query(
+          `SELECT id
+           FROM cajas
+           WHERE estado = 'ABIERTA'
+           FOR UPDATE`,
+        );
+
+        if (cajasAbiertas.length === 0) {
+          throw new ConflictException(
+            'No se pueden crear órdenes sin una caja abierta',
+          );
+        }
         // 1. Código de orden secuencial por BD (atómico hasta con 50 meseros
         //    simultáneos — jamás dos órdenes con el mismo código)
-        const secuencia: { siguiente: number }[] = await manager.query(
-          `SELECT COALESCE(MAX(id), 0) + 1 AS siguiente FROM ordenes`,
+        // Generar código único mediante secuencia PostgreSQL.
+        // Evita códigos duplicados cuando se crean órdenes simultáneamente.
+        const secuencia: { siguiente: string }[] = await manager.query(
+          `SELECT nextval('public.seq_codigo_orden')::text AS siguiente`,
         );
-        const codigoOrden = `ORD-${String(secuencia[0].siguiente).padStart(6, '0')}`;
+
+        const codigoOrden = `ORD-${secuencia[0].siguiente.padStart(6, '0')}`;
 
         // 2. Leer productos y FOTOGRAFIAR precios vigentes
         const productosIds = dto.items.map((i) => i.productoId);
@@ -330,6 +370,8 @@ export class OrdenesService {
           `La orden ${ordenActual.codigo_orden} está ${ordenActual.estado} y no admite nuevos productos`,
         );
       }
+
+      await this.validarSinSubcuentas(ordenId, manager);
       const productosIds = dto.items.map((item) => item.productoId);
 
       const productos: ProductoRow[] = await manager.query(
@@ -561,8 +603,11 @@ export class OrdenesService {
   // ==================== FLUJO DE COCINA (Paso 3.3) ====================
 
   /** Orden básica con mesa — para validaciones y emisión de eventos */
-  private async obtenerOrdenBasica(ordenId: number): Promise<OrdenBasicaRow> {
-    const filas: OrdenBasicaRow[] = await this.dataSource.query(
+  private async obtenerOrdenBasica(
+    ordenId: number,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<OrdenBasicaRow> {
+    const filas: OrdenBasicaRow[] = await manager.query(
       `SELECT o.id, o.codigo_orden, o.estado, o.mesa_id, m.numero AS mesa_numero
          FROM ordenes o LEFT JOIN mesas m ON m.id = o.mesa_id
         WHERE o.id = $1`,
@@ -575,8 +620,12 @@ export class OrdenesService {
   }
 
   /** Item con info de producto — base de las operaciones de cocina */
-  private async obtenerItem(itemId: number, ordenId: number): Promise<ItemRow> {
-    const filas: ItemRow[] = await this.dataSource.query(
+  private async obtenerItem(
+    itemId: number,
+    ordenId: number,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<ItemRow> {
+    const filas: ItemRow[] = await manager.query(
       `SELECT d.id, d.orden_id, d.producto_id, d.cantidad, d.precio_unitario,
               d.notas, d.estado_item, p.nombre AS producto_nombre,
               p.maneja_inventario
@@ -601,9 +650,10 @@ export class OrdenesService {
   private async recalcularEstadoOrden(
     ordenId: number,
     estadoActual: EstadoOrden,
+    manager: EntityManager = this.dataSource.manager,
   ): Promise<{ nuevoEstado: EstadoOrden | null; esLista: boolean }> {
     const conteos: { estado_item: EstadoItem; n: number }[] =
-      await this.dataSource.query(
+      await manager.query(
         `SELECT estado_item, COUNT(*)::int AS n
            FROM detalle_orden WHERE orden_id = $1 GROUP BY estado_item`,
         [ordenId],
@@ -619,7 +669,7 @@ export class OrdenesService {
 
     if (activos > 0) {
       if (estadoActual === EstadoOrden.CREADA) {
-        await this.dataSource.query(
+        await manager.query(
           `UPDATE ordenes SET estado = 'PROCESANDO' WHERE id = $1`,
           [ordenId],
         );
@@ -635,7 +685,7 @@ export class OrdenesService {
 
     if (anulados === total) {
       // La orden quedó vacía: se anula sola
-      await this.dataSource.query(
+      await manager.query(
         `UPDATE ordenes SET estado = 'ANULADA' WHERE id = $1`,
         [ordenId],
       );
@@ -646,10 +696,9 @@ export class OrdenesService {
       estadoActual === EstadoOrden.CREADA ||
       estadoActual === EstadoOrden.PROCESANDO
     ) {
-      await this.dataSource.query(
-        `UPDATE ordenes SET estado = 'LISTA' WHERE id = $1`,
-        [ordenId],
-      );
+      await manager.query(`UPDATE ordenes SET estado = 'LISTA' WHERE id = $1`, [
+        ordenId,
+      ]);
       return { nuevoEstado: EstadoOrden.LISTA, esLista: true };
     }
     return { nuevoEstado: null, esLista: false };
@@ -688,7 +737,7 @@ export class OrdenesService {
     nuevoEstado: EstadoItem,
     rol: string,
   ): Promise<any> {
-    // --- Capa 2 de defensa: el rol autorizado depende de la transición ---
+    // Validar permisos según el estado solicitado
     if (
       (nuevoEstado === EstadoItem.EN_PREPARACION ||
         nuevoEstado === EstadoItem.LISTO) &&
@@ -699,6 +748,7 @@ export class OrdenesService {
         'Solo COCINA puede avanzar la preparación de items',
       );
     }
+
     if (
       nuevoEstado === EstadoItem.ENTREGADO &&
       rol !== RolUsuario.MESERO &&
@@ -708,6 +758,7 @@ export class OrdenesService {
         'Solo el MESERO marca la entrega de un item',
       );
     }
+
     if (
       nuevoEstado === EstadoItem.ANULADO ||
       nuevoEstado === EstadoItem.PENDIENTE
@@ -717,38 +768,74 @@ export class OrdenesService {
       );
     }
 
-    const item = await this.obtenerItem(itemId, ordenId);
-    const orden = await this.obtenerOrdenBasica(ordenId);
-    if (
-      orden.estado === EstadoOrden.CERRADA ||
-      orden.estado === EstadoOrden.ANULADA
-    ) {
-      throw new BadRequestException(
-        `La orden ${orden.codigo_orden} está ${orden.estado} — no admite cambios`,
+    // La transacción protege toda la operación, no solo la lectura.
+    const resultado = await this.dataSource.transaction(async (manager) => {
+      // 1. Bloquear la orden para evitar cambios simultáneos.
+      await manager.query(`SELECT id FROM ordenes WHERE id = $1 FOR UPDATE`, [
+        ordenId,
+      ]);
+
+      // 2. Consultar la orden dentro de la transacción.
+      const orden = await this.obtenerOrdenBasica(ordenId, manager);
+
+      if (
+        orden.estado === EstadoOrden.CERRADA ||
+        orden.estado === EstadoOrden.ANULADA ||
+        orden.estado === EstadoOrden.ENTREGADA
+      ) {
+        throw new BadRequestException(
+          `La orden ${orden.codigo_orden} está ${orden.estado} — no admite cambios`,
+        );
+      }
+
+      // 3. Bloquear el item antes de validar su estado.
+      await manager.query(
+        `SELECT id
+         FROM detalle_orden
+        WHERE id = $1 AND orden_id = $2
+        FOR UPDATE`,
+        [itemId, ordenId],
       );
-    }
 
-    // --- Máquina de estados del item ---
-    const anterior = item.estado_item;
-    const transiciones: Record<string, EstadoItem[]> = {
-      [EstadoItem.PENDIENTE]: [EstadoItem.EN_PREPARACION, EstadoItem.LISTO],
-      [EstadoItem.EN_PREPARACION]: [EstadoItem.LISTO],
-      [EstadoItem.LISTO]: [EstadoItem.ENTREGADO],
-      [EstadoItem.ENTREGADO]: [],
-      [EstadoItem.ANULADO]: [],
-    };
-    if (!transiciones[anterior]?.includes(nuevoEstado)) {
-      throw new BadRequestException(
-        `Transición inválida: ${anterior} → ${nuevoEstado}`,
+      const item = await this.obtenerItem(itemId, ordenId, manager);
+
+      // 4. Validar las transiciones permitidas.
+      const anterior = item.estado_item;
+
+      const transiciones: Record<string, EstadoItem[]> = {
+        [EstadoItem.PENDIENTE]: [EstadoItem.EN_PREPARACION, EstadoItem.LISTO],
+        [EstadoItem.EN_PREPARACION]: [EstadoItem.LISTO],
+        [EstadoItem.LISTO]: [EstadoItem.ENTREGADO],
+        [EstadoItem.ENTREGADO]: [],
+        [EstadoItem.ANULADO]: [],
+      };
+
+      if (!transiciones[anterior]?.includes(nuevoEstado)) {
+        throw new BadRequestException(
+          `Transición inválida: ${anterior} → ${nuevoEstado}`,
+        );
+      }
+
+      // 5. Actualizar el item dentro de la transacción.
+      await manager.query(
+        `UPDATE detalle_orden
+          SET estado_item = $1
+        WHERE id = $2 AND orden_id = $3`,
+        [nuevoEstado, itemId, ordenId],
       );
-    }
 
-    await this.dataSource.query(
-      `UPDATE detalle_orden SET estado_item = $1 WHERE id = $2`,
-      [nuevoEstado, itemId],
-    );
+      // 6. Recalcular el estado de la orden en la misma transacción.
+      const rec = await this.recalcularEstadoOrden(
+        ordenId,
+        orden.estado,
+        manager,
+      );
 
-    const rec = await this.recalcularEstadoOrden(ordenId, orden.estado);
+      return { orden, item, anterior, rec };
+    });
+
+    // 7. Solo emitir eventos después de confirmar la transacción.
+    const { orden, item, anterior, rec } = resultado;
 
     this.realtime.emitirAHouse('item:estado', {
       ordenId: Number(ordenId),
@@ -759,6 +846,7 @@ export class OrdenesService {
       estadoAnterior: anterior,
       estadoItem: nuevoEstado,
     });
+
     this.emitirEventosOrden(orden, orden.estado, rec);
 
     return this.obtenerPorId(ordenId);
@@ -766,41 +854,83 @@ export class OrdenesService {
 
   /** Anula un item (cocina) — devuelve el stock a inventario */
   async anularItem(ordenId: number, itemId: number): Promise<any> {
-    const item = await this.obtenerItem(itemId, ordenId);
-    const orden = await this.obtenerOrdenBasica(ordenId);
-    if (
-      orden.estado === EstadoOrden.CERRADA ||
-      orden.estado === EstadoOrden.ANULADA ||
-      orden.estado === EstadoOrden.ENTREGADA
-    ) {
-      throw new BadRequestException(
-        `La orden ${orden.codigo_orden} está ${orden.estado} — no admite cambios`,
+    const resultado = await this.dataSource.transaction(async (manager) => {
+      // 1. Bloquear la orden para evitar modificaciones simultáneas.
+      await manager.query(
+        `SELECT id
+         FROM ordenes
+        WHERE id = $1
+        FOR UPDATE`,
+        [ordenId],
       );
-    }
 
-    if (
-      item.estado_item !== EstadoItem.PENDIENTE &&
-      item.estado_item !== EstadoItem.EN_PREPARACION
-    ) {
-      throw new BadRequestException(
-        `Solo se anulan items PENDIENTES o EN_PREPARACION (actual: ${item.estado_item})`,
+      // 2. Consultar y validar el estado actual de la orden.
+      const orden = await this.obtenerOrdenBasica(ordenId, manager);
+
+      if (
+        orden.estado === EstadoOrden.CERRADA ||
+        orden.estado === EstadoOrden.ANULADA ||
+        orden.estado === EstadoOrden.ENTREGADA
+      ) {
+        throw new BadRequestException(
+          `La orden ${orden.codigo_orden} está ${orden.estado} — no admite cambios`,
+        );
+      }
+
+      await this.validarSinSubcuentas(ordenId, manager);
+      // 3. Bloquear el ítem antes de consultar su estado.
+      await manager.query(
+        `SELECT id
+         FROM detalle_orden
+        WHERE id = $1
+          AND orden_id = $2
+        FOR UPDATE`,
+        [itemId, ordenId],
       );
-    }
 
-    // Restaurar stock (suma atómica — sin riesgo de carreras)
-    if (item.maneja_inventario) {
-      await this.dataSource.query(
-        `UPDATE productos SET stock_actual = stock_actual + $1 WHERE id = $2`,
-        [item.cantidad, item.producto_id],
+      const item = await this.obtenerItem(itemId, ordenId, manager);
+
+      // 4. Validar que el ítem todavía pueda anularse.
+      if (
+        item.estado_item !== EstadoItem.PENDIENTE &&
+        item.estado_item !== EstadoItem.EN_PREPARACION
+      ) {
+        throw new BadRequestException(
+          `Solo se anulan items PENDIENTES o EN_PREPARACION (actual: ${item.estado_item})`,
+        );
+      }
+
+      // 5. Restaurar inventario dentro de la misma transacción.
+      if (item.maneja_inventario) {
+        await manager.query(
+          `UPDATE productos
+            SET stock_actual = stock_actual + $1
+          WHERE id = $2`,
+          [item.cantidad, item.producto_id],
+        );
+      }
+
+      // 6. Marcar el ítem como anulado.
+      await manager.query(
+        `UPDATE detalle_orden
+          SET estado_item = $1
+        WHERE id = $2
+          AND orden_id = $3`,
+        [EstadoItem.ANULADO, itemId, ordenId],
       );
-    }
 
-    await this.dataSource.query(
-      `UPDATE detalle_orden SET estado_item = 'ANULADO' WHERE id = $1`,
-      [itemId],
-    );
+      // 7. Recalcular el estado de la orden en la misma transacción.
+      const rec = await this.recalcularEstadoOrden(
+        ordenId,
+        orden.estado,
+        manager,
+      );
 
-    const rec = await this.recalcularEstadoOrden(ordenId, orden.estado);
+      return { orden, item, rec };
+    });
+
+    // 8. Emitir eventos únicamente después del COMMIT.
+    const { orden, item, rec } = resultado;
 
     this.realtime.emitirAHouse('item:estado', {
       ordenId: Number(ordenId),
@@ -811,6 +941,7 @@ export class OrdenesService {
       estadoAnterior: item.estado_item,
       estadoItem: EstadoItem.ANULADO,
     });
+
     this.emitirEventosOrden(orden, orden.estado, rec);
 
     return this.obtenerPorId(ordenId);
@@ -825,39 +956,45 @@ export class OrdenesService {
       );
     }
 
-    await this.dataSource.transaction(async (manager) => {
-      const filasOrden = await manager.query(
-        `SELECT id, codigo_orden, estado
+    const ordenCerrada = await this.dataSource.transaction(
+      async (manager): Promise<boolean> => {
+        const filasOrden = await manager.query(
+          `SELECT id, codigo_orden, estado
        FROM ordenes
       WHERE id = $1
       FOR UPDATE`,
-        [ordenId],
-      );
-
-      if (filasOrden.length === 0) {
-        throw new NotFoundException(`No existe la orden ${ordenId}`);
-      }
-
-      if (filasOrden[0].estado !== EstadoOrden.LISTA) {
-        throw new BadRequestException(
-          `Solo se entregan órdenes LISTA (estado actual: ${filasOrden[0].estado})`,
+          [ordenId],
         );
-      }
 
-      await manager.query(
-        `UPDATE detalle_orden SET estado_item = 'ENTREGADO'
+        if (filasOrden.length === 0) {
+          throw new NotFoundException(`No existe la orden ${ordenId}`);
+        }
+
+        if (filasOrden[0].estado !== EstadoOrden.LISTA) {
+          throw new BadRequestException(
+            `Solo se entregan órdenes LISTA (estado actual: ${filasOrden[0].estado})`,
+          );
+        }
+
+        await manager.query(
+          `UPDATE detalle_orden SET estado_item = 'ENTREGADO'
       WHERE orden_id = $1 AND estado_item = 'LISTO'`,
-        [ordenId],
-      );
+          [ordenId],
+        );
 
-      await manager.query(
-        `UPDATE ordenes SET estado = 'ENTREGADA' WHERE id = $1`,
-        [ordenId],
-      );
-    });
+        await manager.query(
+          `UPDATE ordenes SET estado = 'ENTREGADA' WHERE id = $1`,
+          [ordenId],
+        );
+
+        // Intentar liquidar automáticamente la orden después de entregarla.
+        // La orden ya está bloqueada mediante SELECT ... FOR UPDATE.
+        return this.cobrosService.intentarLiquidarOrden(manager, ordenId);
+      },
+    );
 
     this.emitirEventosOrden(orden, orden.estado, {
-      nuevoEstado: EstadoOrden.ENTREGADA,
+      nuevoEstado: ordenCerrada ? EstadoOrden.CERRADA : EstadoOrden.ENTREGADA,
       esLista: false,
     });
 
@@ -904,6 +1041,7 @@ export class OrdenesService {
           `Una orden ${estadoActual} no se puede anular`,
         );
       }
+      await this.validarSinSubcuentas(ordenId, manager);
       // Restaurar stock de items aún no anulados que manejan inventario
       const items: ItemRow[] = await manager.query(
         `SELECT d.id, d.orden_id, d.producto_id, d.cantidad, d.precio_unitario,
@@ -932,7 +1070,16 @@ export class OrdenesService {
       );
       if (orden.mesa_id) {
         await manager.query(
-          `UPDATE mesas SET estado = 'LIBRE' WHERE id = $1 AND estado = 'OCUPADA'`,
+          `UPDATE mesas
+        SET estado = 'LIBRE'
+      WHERE id = $1
+        AND estado = 'OCUPADA'
+        AND NOT EXISTS (
+          SELECT 1
+            FROM ordenes
+           WHERE mesa_id = $1
+             AND estado NOT IN ('ANULADA', 'CERRADA')
+        )`,
           [orden.mesa_id],
         );
       }

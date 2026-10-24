@@ -360,7 +360,11 @@ export default function VistaOrdenes({
               )
             }
           >
-            {e === "EN_PREPARACION" ? "▶" : e === "LISTO" ? "👨‍🍳" : "📦"}
+            {e === "EN_PREPARACION"
+              ? "▶ Preparar"
+              : e === "LISTO"
+                ? "👨‍🍳 Listo"
+                : "📦 Entregar"}
           </button>
         ))}
         {anulable && (
@@ -380,7 +384,7 @@ export default function VistaOrdenes({
               }
             }}
           >
-            ✕
+            ✕ Anular
           </button>
         )}
       </span>
