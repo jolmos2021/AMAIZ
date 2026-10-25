@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import VistaMesas from "./vistas/VistaMesas";
 import VistaOrdenes from "./vistas/VistaOrdenes";
 import VistaPerfil from "./vistas/VistaPerfil";
+import VistaCaja from "./vistas/VistaCaja";
 import "./App.css";
 
 const CLAVE_VISTA = "meseroapp.ultima-vista";
@@ -16,6 +17,7 @@ const COLORES_ROL = {
 const VISTAS = [
   { id: "mesas", icono: "🏠", etiqueta: "Mesas" },
   { id: "ordenes", icono: "📋", etiqueta: "Órdenes" },
+  { id: "caja", icono: "💳", etiqueta: "Caja y Cobros" },
   { id: "perfil", icono: "👤", etiqueta: "Perfil" },
 ];
 
@@ -75,6 +77,9 @@ export default function Dashboard({ sesion, alSalir }) {
             alConsumarMesaInicial={() => setMesaParaOrden(null)}
           />
         )}
+        {vista === "caja" && ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol) && (
+          <VistaCaja sesion={sesion} />
+        )}
         {vista === "perfil" && (
           <VistaPerfil sesion={sesion} alSalir={alSalir} />
         )}
@@ -82,7 +87,7 @@ export default function Dashboard({ sesion, alSalir }) {
 
       <nav className="tabs">
         <div className="tabs-interior">
-          {VISTAS.map((v) => (
+          {VISTAS.filter((v) => v.id !== "caja" || ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol)).map((v) => (
             <button
               key={v.id}
               className={`tab ${vista === v.id ? "activo" : ""}`}
@@ -97,3 +102,4 @@ export default function Dashboard({ sesion, alSalir }) {
     </div>
   );
 }
+

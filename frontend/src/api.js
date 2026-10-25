@@ -1,9 +1,9 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
+﻿const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 const CLAVE_SESION = "meseroapp.sesion";
 
 export { API_URL };
 
-// ─── Persistencia de la sesión ───
+// --- Persistencia de la sesión ---
 export function leerSesion() {
   try {
     const cruda = localStorage.getItem(CLAVE_SESION);
@@ -23,7 +23,7 @@ export function borrarSesion() {
   localStorage.removeItem(CLAVE_SESION);
 }
 
-// ─── Llamadas al backend ───
+// --- Llamadas al backend ---
 function extraerMensaje(data, status) {
   if (Array.isArray(data?.message)) return data.message.join(" · ");
   if (typeof data?.message === "string") return data.message;
@@ -37,6 +37,7 @@ async function pedir(url, opciones = {}) {
   } catch {
     throw new Error("sin-conexion");
   }
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(extraerMensaje(data, res.status));
   return data;
@@ -55,6 +56,7 @@ export async function login(username, password) {
       "No se pudo conectar al backend — ¿está corriendo en el puerto 3000?",
     );
   }
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(extraerMensaje(data, res.status));
   return data;
@@ -69,12 +71,13 @@ export async function obtenerPerfil(token) {
   } catch {
     throw new Error("sin-conexion");
   }
+
   if (res.status === 401) throw new Error("token-invalido");
   if (!res.ok) throw new Error(`Error HTTP ${res.status}`);
   return res.json();
 }
 
-// ─── Mesas ───
+// --- Mesas ---
 const authHeaders = (token, json = false) => ({
   Authorization: `Bearer ${token}`,
   ...(json ? { "Content-Type": "application/json" } : {}),
@@ -110,12 +113,16 @@ export const eliminarMesa = (token, id) =>
     headers: authHeaders(token),
   });
 
-// ─── Órdenes ───
+// --- Órdenes ---
 export const obtenerMenuDelDia = (token) =>
-  pedir(`${API_URL}/productos/menu-del-dia`, { headers: authHeaders(token) });
+  pedir(`${API_URL}/productos/menu-del-dia`, {
+    headers: authHeaders(token),
+  });
 
 export const obtenerOrdenesActivas = (token) =>
-  pedir(`${API_URL}/ordenes/activas`, { headers: authHeaders(token) });
+  pedir(`${API_URL}/ordenes/activas`, {
+    headers: authHeaders(token),
+  });
 
 export const crearOrden = (token, dto) =>
   pedir(`${API_URL}/ordenes`, {
@@ -158,3 +165,98 @@ export const anularOrden = (token, ordenId) =>
     method: "PATCH",
     headers: authHeaders(token),
   });
+
+// --- Caja y Cobros ---
+export const obtenerCajaActual = (token) =>
+  pedir(`${API_URL}/cajas/actual`, {
+    headers: authHeaders(token),
+  });
+
+// Consultar detalle y total cobrable de una orden
+export const obtenerDetalleCobro = (token, ordenId) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}`, {
+    headers: authHeaders(token),
+  });
+
+// Consultar subcuentas y sus saldos
+export const obtenerSubcuentasOrden = (token, ordenId) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}/subcuentas`, {
+    headers: authHeaders(token),
+  });
+
+// Registrar una división de cuenta en partes iguales
+export const dividirCuentaIguales = (token, ordenId, nombres) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}/dividir`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({
+      modalidad: "IGUALES",
+      personas: nombres.map((nombre) => ({
+        nombre: nombre.trim(),
+      })),
+    }),
+  });
+
+// Consultar métodos de pago configurados
+export const obtenerMetodosPago = (token) =>
+  pedir(`${API_URL}/cobros/metodos`, {
+    headers: authHeaders(token),
+  });
+
+// Registrar un pago individual asociado a una subcuenta
+export const registrarPagoSubcuenta = (
+  token,
+  ordenId,
+  subcuentaId,
+  metodoPagoId,
+  valor,
+) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}/pagar`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({
+      subcuentaId,
+      metodoPagoId,
+      valor,
+    }),
+  });
+
+// Obtener saldo por cubrir de una orden
+export async function obtenerSaldoOrden(token, ordenId) {
+  const [detalle, subcuentas] = await Promise.all([
+    obtenerDetalleCobro(token, ordenId),
+    obtenerSubcuentasOrden(token, ordenId),
+  ]);
+
+  if (!Array.isArray(subcuentas)) {
+    throw new Error("Respuesta de subcuentas no válida");
+  }
+
+  const totalCobrable = Number(detalle.total);
+
+  if (!Number.isFinite(totalCobrable)) {
+    throw new Error("Total cobrable no válido");
+  }
+
+  if (subcuentas.length === 0) {
+    return {
+      totalCobrable,
+      saldoPorCubrir: totalCobrable,
+      cantidadSubcuentas: 0,
+    };
+  }
+
+  const saldos = subcuentas.map((subcuenta) =>
+    Number(subcuenta.saldo_por_cubrir),
+  );
+
+  if (saldos.some((saldo) => !Number.isFinite(saldo))) {
+    throw new Error("Saldo de subcuenta no válido");
+  }
+
+  return {
+    totalCobrable,
+    saldoPorCubrir: saldos.reduce((total, saldo) => total + saldo, 0),
+    cantidadSubcuentas: subcuentas.length,
+  };
+}
