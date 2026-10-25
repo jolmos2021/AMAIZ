@@ -21,9 +21,12 @@ export interface DetalleCierreCaja {
   montoInicial: number;
   totalPagos: number;
   totalAbonos: number;
-  montoFinalCalculado: number;
-  montoDeclarado?: number;
-  diferencia?: number; // positiva = sobrante / negativa = faltante
+  montoFinalCalculado: number; // efectivo esperado
+  totalEfectivo: number;
+  totalTarjeta: number;
+  totalTransferencia: number;
+  montoDeclarado: number;
+  diferencia: number; // positiva = sobrante / negativa = faltante
 }
 
 @Injectable()
@@ -191,67 +194,75 @@ export class CajasService {
         );
       }
 
-      // 4. Calcular los pagos de esta caja.
-      const pagos = await manager.query(
-        `SELECT COALESCE(
-           SUM(valor_pagado), 0
-         )::text AS total
-         FROM pagos
-         WHERE caja_id = $1`,
-        [cajaId],
-      );
+      // 4. Totalizar pagos y abonos por método, sin duplicar créditos otorgados.
+      const movimientos: { metodo: string; total: string; origen: string }[] =
+        await manager.query(
+          `SELECT origen, metodo, SUM(total)::text AS total
+             FROM (
+               SELECT 'PAGO' AS origen, mp.nombre AS metodo,
+                      p.valor_pagado AS total
+                 FROM pagos p
+                 JOIN metodos_pago mp ON mp.id = p.metodo_pago_id
+                WHERE p.caja_id = $1
+               UNION ALL
+               SELECT 'ABONO' AS origen, mp.nombre AS metodo,
+                      a.valor_abonado AS total
+                 FROM abonos_credito a
+                 JOIN metodos_pago mp ON mp.id = a.metodo_pago_id
+                WHERE a.caja_id = $1
+             ) movimientos
+            GROUP BY origen, metodo`,
+          [cajaId],
+        );
 
-      // 5. Calcular los abonos a créditos.
-      const abonos = await manager.query(
-        `SELECT COALESCE(
-           SUM(valor_abonado), 0
-         )::text AS total
-         FROM abonos_credito
-         WHERE caja_id = $1`,
-        [cajaId],
+      const sumar = (metodo: string) => this.redondear(
+        movimientos.filter((m) => m.metodo === metodo)
+          .reduce((suma, m) => suma + Number(m.total), 0),
+      );
+      const sumarOrigen = (origen: string) => this.redondear(
+        movimientos.filter((m) => m.origen === origen)
+          .reduce((suma, m) => suma + Number(m.total), 0),
       );
 
       const montoInicial = Number(caja.monto_inicial);
-      const totalPagos = Number(pagos[0]?.total ?? 0);
-      const totalAbonos = Number(abonos[0]?.total ?? 0);
+      const totalPagos = sumarOrigen('PAGO');
+      const totalAbonos = sumarOrigen('ABONO');
+      const totalEfectivo = sumar('EFECTIVO');
+      const totalTarjeta = sumar('TARJETA');
+      const totalTransferencia = sumar('TRANSFERENCIA');
+      const montoFinalCalculado = this.redondear(montoInicial + totalEfectivo);
+      const montoDeclarado = this.redondear(dto.montoDeclarado);
+      const diferencia = this.redondear(montoDeclarado - montoFinalCalculado);
 
-      const montoFinalCalculado = this.redondear(
-        montoInicial + totalPagos + totalAbonos,
-      );
-
-      // 6. Cerrar la caja dentro de la transacción.
+      // 5. Cierre atómico y persistencia del arqueo.
       const actualizadas = await manager.query(
         `UPDATE cajas
-         SET estado = 'CERRADA',
-             fecha_cierre = NOW(),
-             monto_final = $2
-         WHERE id = $1
-           AND estado = 'ABIERTA'
-         RETURNING id`,
-        [cajaId, montoFinalCalculado.toFixed(2)],
+            SET estado = 'CERRADA',
+                fecha_cierre = NOW(),
+                monto_final = $2,
+                monto_declarado = $3,
+                diferencia = $4,
+                observaciones = $5
+          WHERE id = $1 AND estado = 'ABIERTA'
+          RETURNING id`,
+        [cajaId, montoFinalCalculado.toFixed(2), montoDeclarado.toFixed(2),
+         diferencia.toFixed(2), dto.observaciones?.trim() || null],
       );
-
       if (!actualizadas.length) {
-        throw new ConflictException(
-          'La caja cambió de estado durante el cierre',
-        );
+        throw new ConflictException('La caja cambió de estado durante el cierre');
       }
 
-      // 7. Preparar el detalle del cierre.
       const detalle: DetalleCierreCaja = {
-        montoInicial,
-        totalPagos: this.redondear(totalPagos),
-        totalAbonos: this.redondear(totalAbonos),
+        montoInicial: this.redondear(montoInicial),
+        totalPagos,
+        totalAbonos,
+        totalEfectivo,
+        totalTarjeta,
+        totalTransferencia,
         montoFinalCalculado,
+        montoDeclarado,
+        diferencia,
       };
-
-      if (dto?.montoDeclarado !== undefined) {
-        detalle.montoDeclarado = dto.montoDeclarado;
-        detalle.diferencia = this.redondear(
-          dto.montoDeclarado - montoFinalCalculado,
-        );
-      }
-
       return detalle;
     });
 
@@ -297,15 +308,32 @@ export class CajasService {
     const totalPagos = pagosPorMetodo.reduce((acc, p) => acc + p.total, 0);
     const totalAbonos = abonosPorMetodo.reduce((acc, a) => acc + a.total, 0);
 
+    const totalEfectivo = this.redondear(
+      [...pagosPorMetodo, ...abonosPorMetodo]
+        .filter((m) => m.metodo === 'EFECTIVO')
+        .reduce((total, m) => total + m.total, 0),
+    );
+    const totalTarjeta = this.redondear(
+      [...pagosPorMetodo, ...abonosPorMetodo]
+        .filter((m) => m.metodo === 'TARJETA')
+        .reduce((total, m) => total + m.total, 0),
+    );
+    const totalTransferencia = this.redondear(
+      [...pagosPorMetodo, ...abonosPorMetodo]
+        .filter((m) => m.metodo === 'TRANSFERENCIA')
+        .reduce((total, m) => total + m.total, 0),
+    );
+
     return {
       caja,
       pagosPorMetodo,
       abonosPorMetodo,
       totalPagos: this.redondear(totalPagos),
       totalAbonos: this.redondear(totalAbonos),
-      montoFinalEsperado: this.redondear(
-        caja.montoInicial + totalPagos + totalAbonos,
-      ),
+      totalEfectivo,
+      totalTarjeta,
+      totalTransferencia,
+      montoFinalEsperado: this.redondear(caja.montoInicial + totalEfectivo),
     };
   }
 }

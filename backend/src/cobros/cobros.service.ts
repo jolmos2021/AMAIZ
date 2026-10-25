@@ -8,6 +8,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { DividirCuentaDto, ModalidadDivision } from './dto/dividir-cuenta.dto';
 import { RegistrarPagoDto } from './dto/registrar-pago.dto';
+import { RegistrarPagoCombinadoDto } from './dto/registrar-pago-combinado.dto';
 import { RegistrarCreditoDto } from './dto/registrar-credito.dto';
 import { RegistrarAbonoDto } from './dto/registrar-abono.dto';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -139,7 +140,7 @@ export class CobrosService {
 
   async obtenerMetodos() {
     return this.dataSource.query(
-      `SELECT id, nombre, activo
+      `SELECT id, nombre, activo, tipo_procesamiento
        FROM metodos_pago
        WHERE activo = TRUE
        ORDER BY id`,
@@ -593,7 +594,7 @@ export class CobrosService {
 
       // 3. Validar método de pago.
       const metodos = await manager.query(
-        `SELECT id, nombre
+        `SELECT id, nombre, tipo_procesamiento
        FROM metodos_pago
        WHERE id = $1
          AND activo = TRUE`,
@@ -606,7 +607,7 @@ export class CobrosService {
         );
       }
 
-      if (metodos[0].nombre.toUpperCase() === 'CRÉDITO') {
+      if (metodos[0].tipo_procesamiento !== 'PAGO_INMEDIATO') {
         throw new BadRequestException(
           'Los créditos deben registrarse mediante el módulo de créditos',
         );
@@ -735,6 +736,174 @@ export class CobrosService {
 
     return resultado;
   }
+
+  /** Cobra el saldo completo con métodos configurados; pagos y crédito son atómicos. */
+  async registrarPagoCombinado(ordenId: number, dto: RegistrarPagoCombinadoDto) {
+    const resultado = await this.dataSource.transaction(async (manager) => {
+      const ordenes = await manager.query(
+        `SELECT o.id, o.codigo_orden, o.estado, o.mesa_id,
+                m.numero AS mesa_numero
+           FROM ordenes o
+           LEFT JOIN mesas m ON m.id = o.mesa_id
+          WHERE o.id = $1 FOR UPDATE OF o`,
+        [ordenId],
+      );
+      if (!ordenes.length) throw new NotFoundException(`No existe la orden ${ordenId}`);
+      const orden = ordenes[0];
+      if (orden.estado !== 'ENTREGADA') {
+        throw new ConflictException('La orden debe estar ENTREGADA para el cobro combinado');
+      }
+
+      const cajas = await manager.query(
+        `SELECT id FROM cajas WHERE estado = 'ABIERTA'
+          ORDER BY id LIMIT 1 FOR UPDATE`,
+      );
+      if (!cajas.length) {
+        throw new BadRequestException('Debe existir una caja abierta para registrar pagos');
+      }
+
+      const subcuentas = await manager.query(
+        `SELECT id, nombre, total_asignado::text AS total_asignado
+           FROM subcuentas WHERE orden_id = $1 FOR UPDATE`,
+        [ordenId],
+      );
+      if (subcuentas.length !== 1 || subcuentas[0].nombre !== 'Cuenta completa') {
+        throw new ConflictException('El cobro combinado requiere una única subcuenta Cuenta completa');
+      }
+      const subcuenta = subcuentas[0];
+      const pagosPrevios = await manager.query(
+        `SELECT COALESCE(SUM(p.valor_pagado), 0)::text AS pagado
+           FROM subcuenta_pagos sp JOIN pagos p ON p.id = sp.pago_id
+          WHERE sp.subcuenta_id = $1`, [subcuenta.id],
+      );
+      const creditosPrevios = await manager.query(
+        `SELECT COUNT(*)::int AS cantidad,
+                COALESCE(SUM(valor_total), 0)::text AS credito
+           FROM creditos_clientes WHERE subcuenta_id = $1`, [subcuenta.id],
+      );
+      const saldo = Math.round(Number(subcuenta.total_asignado) * 100)
+        - Math.round(Number(pagosPrevios[0].pagado) * 100)
+        - Math.round(Number(creditosPrevios[0].credito) * 100);
+      if (saldo <= 0) throw new ConflictException('La cuenta ya no tiene saldo pendiente');
+
+      const valores = dto.pagos.map((p) => Math.round(p.valor * 100));
+      if (valores.some((v, i) => !Number.isSafeInteger(v) || v <= 0 ||
+          Math.abs(dto.pagos[i].valor * 100 - v) > 0.000001)) {
+        throw new BadRequestException('Los importes deben ser positivos y tener máximo 2 decimales');
+      }
+      const total = valores.reduce((a, b) => a + b, 0);
+      if (!Number.isSafeInteger(total) || total !== saldo) {
+        throw new BadRequestException(
+          `El total de métodos debe coincidir exactamente con el saldo pendiente de ${(saldo / 100).toFixed(2)}`,
+        );
+      }
+
+      const ids = dto.pagos.map((p) => p.metodoPagoId);
+      if (new Set(ids).size !== ids.length) {
+        throw new BadRequestException('No repitas un método de pago; agrupa su importe');
+      }
+      const metodos = await manager.query(
+        `SELECT id, nombre, tipo_procesamiento FROM metodos_pago
+          WHERE id = ANY($1::bigint[]) AND activo = TRUE`,
+        [ids],
+      );
+      const porId = new Map<number, { nombre: string; tipo_procesamiento: string }>(
+        metodos.map((m: { id: number; nombre: string; tipo_procesamiento: string }) =>
+          [Number(m.id), m]),
+      );
+      if (porId.size !== dto.pagos.length) {
+        throw new BadRequestException('Hay métodos de pago inexistentes o inactivos');
+      }
+      const creditosSolicitados = dto.pagos.filter(
+        (p) => porId.get(p.metodoPagoId)?.tipo_procesamiento === 'CREDITO_CLIENTE',
+      );
+      if (creditosSolicitados.length > 1) {
+        throw new BadRequestException('Solo se admite un crédito por subcuenta');
+      }
+      if (creditosSolicitados.length && Number(creditosPrevios[0].cantidad) > 0) {
+        throw new ConflictException('Esta subcuenta ya tiene un crédito registrado');
+      }
+      for (const pago of dto.pagos) {
+        const tipo = porId.get(pago.metodoPagoId)?.tipo_procesamiento;
+        if (tipo !== 'PAGO_INMEDIATO' && tipo !== 'CREDITO_CLIENTE') {
+          throw new BadRequestException('Tipo de procesamiento no admitido');
+        }
+        if (tipo === 'CREDITO_CLIENTE' && !pago.clienteId) {
+          throw new BadRequestException('El crédito requiere seleccionar un cliente');
+        }
+        if (tipo === 'PAGO_INMEDIATO' && pago.clienteId !== undefined) {
+          throw new BadRequestException('Solo los créditos admiten clienteId');
+        }
+      }
+
+      if (creditosSolicitados.length) {
+        const clienteId = creditosSolicitados[0].clienteId;
+        const clientes = await manager.query(
+          'SELECT id FROM clientes WHERE id = $1', [clienteId],
+        );
+        if (!clientes.length) {
+          throw new NotFoundException(`No existe el cliente ${clienteId}`);
+        }
+      }
+
+      const pagosCreados: { pagoId: number; metodoPagoId: number; valor: number }[] = [];
+      const creditosCreados: { creditoId: number; metodoPagoId: number; clienteId: number; valor: number }[] = [];
+      for (let i = 0; i < dto.pagos.length; i++) {
+        const pago = dto.pagos[i];
+        const valor = (valores[i] / 100).toFixed(2);
+        const tipo = porId.get(pago.metodoPagoId)!.tipo_procesamiento;
+        if (tipo === 'PAGO_INMEDIATO') {
+          const creado = await manager.query(
+            `INSERT INTO pagos (orden_id, metodo_pago_id, valor_pagado, caja_id)
+             VALUES ($1, $2, $3, $4) RETURNING id`,
+            [ordenId, pago.metodoPagoId, valor, cajas[0].id],
+          );
+          await manager.query(
+            `INSERT INTO subcuenta_pagos (subcuenta_id, pago_id) VALUES ($1, $2)`,
+            [subcuenta.id, creado[0].id],
+          );
+          pagosCreados.push({
+            pagoId: Number(creado[0].id), metodoPagoId: pago.metodoPagoId, valor: valores[i] / 100,
+          });
+        } else {
+          const creado = await manager.query(
+            `INSERT INTO creditos_clientes
+              (cliente_id, orden_id, subcuenta_id, valor_total, saldo_pendiente, estado)
+             VALUES ($1, $2, $3, $4, $4, 'PENDIENTE') RETURNING id`,
+            [pago.clienteId, ordenId, subcuenta.id, valor],
+          );
+          await manager.query(
+            `UPDATE subcuentas SET cliente_id = $1 WHERE id = $2`,
+            [pago.clienteId, subcuenta.id],
+          );
+          creditosCreados.push({
+            creditoId: Number(creado[0].id), metodoPagoId: pago.metodoPagoId,
+            clienteId: pago.clienteId!, valor: valores[i] / 100,
+          });
+        }
+      }
+
+      const ordenCerrada = await this.intentarLiquidarOrden(manager, ordenId);
+      if (!ordenCerrada) {
+        throw new ConflictException('No fue posible liquidar la orden; operación revertida');
+      }
+      return {
+        ordenId, codigoOrden: orden.codigo_orden,
+        mesa: orden.mesa_id ? { id: Number(orden.mesa_id), numero: orden.mesa_numero } : null,
+        cajaId: cajas[0].id, subcuentaId: subcuenta.id,
+        pagos: pagosCreados, creditos: creditosCreados,
+        totalCubierto: total / 100, saldoPendiente: 0, ordenCerrada,
+      };
+    });
+    if (resultado.ordenCerrada) {
+      this.realtime.emitirAHouse('orden:estado', {
+        ordenId, codigoOrden: resultado.codigoOrden,
+        estadoAnterior: 'ENTREGADA', estado: 'CERRADA', mesa: resultado.mesa,
+      });
+    }
+    return resultado;
+  }
+
   async registrarCredito(ordenId: number, dto: RegistrarCreditoDto) {
     const resultado = await this.dataSource.transaction(async (manager) => {
       // 1. Bloquear la orden.
@@ -1033,7 +1202,7 @@ export class CobrosService {
       }
 
       const metodos = await manager.query(
-        `SELECT id, nombre FROM metodos_pago
+        `SELECT id, nombre, tipo_procesamiento FROM metodos_pago
          WHERE id = $1 AND activo = TRUE`,
         [dto.metodoPagoId],
       );
@@ -1043,15 +1212,10 @@ export class CobrosService {
         );
       }
 
-      // No se puede pagar un crédito creando otro crédito.
-      const nombreMetodo = String(metodos[0].nombre)
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .trim()
-        .toUpperCase();
-      if (nombreMetodo === 'CREDITO') {
+      // Los abonos solo admiten métodos que representen dinero recibido.
+      if (metodos[0].tipo_procesamiento !== 'PAGO_INMEDIATO') {
         throw new BadRequestException(
-          'El abono debe realizarse mediante un método de pago efectivo',
+          'El abono requiere un método de pago inmediato',
         );
       }
 

@@ -39,6 +39,17 @@ export class Caja {
   })
   montoFinal?: number;
 
+  @Column({ name: 'monto_declarado', type: 'numeric', precision: 12,
+    scale: 2, nullable: true, transformer: new NumericTransformer() })
+  montoDeclarado?: number;
+
+  @Column({ name: 'diferencia', type: 'numeric', precision: 12,
+    scale: 2, nullable: true, transformer: new NumericTransformer() })
+  diferencia?: number;
+
+  @Column({ name: 'observaciones', type: 'text', nullable: true })
+  observaciones?: string;
+
   @Column({ name: 'usuario_id' })
   usuarioId: number;
 

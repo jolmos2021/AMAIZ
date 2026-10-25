@@ -10,6 +10,7 @@ import {
 import { CobrosService } from './cobros.service';
 import { DividirCuentaDto } from './dto/dividir-cuenta.dto';
 import { RegistrarPagoDto } from './dto/registrar-pago.dto';
+import { RegistrarPagoCombinadoDto } from './dto/registrar-pago-combinado.dto';
 import { RegistrarCreditoDto } from './dto/registrar-credito.dto';
 import { RegistrarAbonoDto } from './dto/registrar-abono.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -62,6 +63,15 @@ export class CobrosController {
   ) {
     return this.cobrosService.registrarPago(id, dto);
   }
+  @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
+  @Post('orden/:id/pagar-combinado')
+  registrarPagoCombinado(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RegistrarPagoCombinadoDto,
+  ) {
+    return this.cobrosService.registrarPagoCombinado(id, dto);
+  }
+
   @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
   @Post('orden/:id/credito')
   registrarCredito(

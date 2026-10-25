@@ -2,10 +2,15 @@ import { useEffect, useState } from "react";
 import DetalleSubcuentas from "./DetalleSubcuentas";
 import DividirCuentaIguales from "./DividirCuentaIguales";
 import RegistrarPagoSubcuenta from "./RegistrarPagoSubcuenta";
+import CobroCombinado from "./CobroCombinado";
 import {
   obtenerCajaActual,
   obtenerOrdenesActivas,
   obtenerSaldoOrden,
+  obtenerResumenCaja,
+  cerrarCajaConArqueo,
+  dividirCuentaIguales,
+  obtenerSubcuentasOrden,
 } from "../api";
 
 export default function VistaCaja({ sesion }) {
@@ -15,6 +20,15 @@ export default function VistaCaja({ sesion }) {
   const [versionActualizacion, setVersionActualizacion] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
+  const [resumen, setResumen] = useState(null);
+  const [errorResumen, setErrorResumen] = useState("");
+  const [montoDeclarado, setMontoDeclarado] = useState("");
+  const [observaciones, setObservaciones] = useState("");
+  const [cerrando, setCerrando] = useState(false);
+  const [preparandoCobroCompleto, setPreparandoCobroCompleto] = useState(false);
+  const [errorCobroCompleto, setErrorCobroCompleto] = useState("");
+  const [mensajeArqueo, setMensajeArqueo] = useState("");
+  const [cuentaCompleta, setCuentaCompleta] = useState(false);
 
   useEffect(() => {
     let activo = true;
@@ -44,6 +58,7 @@ export default function VistaCaja({ sesion }) {
                 ...orden,
                 totalCobrable: detalle.totalCobrable,
                 saldoPorCubrir: detalle.saldoPorCubrir,
+                cantidadSubcuentas: detalle.cantidadSubcuentas,
                 errorCobro: null,
               };
             } catch (err) {
@@ -51,6 +66,7 @@ export default function VistaCaja({ sesion }) {
                 ...orden,
                 totalCobrable: null,
                 saldoPorCubrir: null,
+                cantidadSubcuentas: null,
                 errorCobro: err.message,
               };
             }
@@ -60,6 +76,13 @@ export default function VistaCaja({ sesion }) {
         if (activo) {
           setCaja(cajaActual);
           setOrdenes(resultados);
+          setResumen(null);
+          setErrorResumen("");
+          if (cajaActual?.id) {
+            obtenerResumenCaja(token, cajaActual.id)
+              .then((r) => { if (activo) setResumen(r); })
+              .catch((e) => { if (activo) setErrorResumen(e.message); });
+          }
         }
       } catch (err) {
         if (activo) setError(err.message);
@@ -75,6 +98,32 @@ export default function VistaCaja({ sesion }) {
     };
   }, [sesion.accessToken]);
 
+  useEffect(() => {
+    let vigente = true;
+    setCuentaCompleta(false);
+    if (ordenSeleccionadaId == null) return () => { vigente = false; };
+    obtenerSubcuentasOrden(sesion.accessToken, ordenSeleccionadaId)
+      .then((subcuentas) => {
+        if (vigente) setCuentaCompleta(
+          Array.isArray(subcuentas) && subcuentas.length === 1 &&
+          subcuentas[0].nombre === "Cuenta completa"
+        );
+      })
+      .catch(() => { if (vigente) setCuentaCompleta(false); });
+    return () => { vigente = false; };
+  }, [sesion.accessToken, ordenSeleccionadaId, versionActualizacion]);
+
+  const refrescarTrasCobro = async (ordenId, ordenCerrada) => {
+    setVersionActualizacion((actual) => actual + 1);
+    await actualizarResumen();
+    if (ordenCerrada) {
+      setOrdenes((actuales) => actuales.filter((o) => o.id !== ordenId));
+      setOrdenSeleccionadaId(null);
+    } else {
+      await actualizarSaldoOrden(ordenId);
+    }
+  };
+
   const actualizarSaldoOrden = async (ordenId) => {
     try {
       const detalle = await obtenerSaldoOrden(sesion.accessToken, ordenId);
@@ -86,6 +135,7 @@ export default function VistaCaja({ sesion }) {
                 ...orden,
                 totalCobrable: detalle.totalCobrable,
                 saldoPorCubrir: detalle.saldoPorCubrir,
+                cantidadSubcuentas: detalle.cantidadSubcuentas,
                 errorCobro: null,
               }
             : orden,
@@ -99,11 +149,68 @@ export default function VistaCaja({ sesion }) {
                 ...orden,
                 totalCobrable: null,
                 saldoPorCubrir: null,
+                cantidadSubcuentas: null,
                 errorCobro: err.message,
               }
             : orden,
         ),
       );
+    }
+  };
+
+  const prepararCobroCompleto = async (ordenId) => {
+    setErrorCobroCompleto("");
+    setPreparandoCobroCompleto(true);
+    try {
+      const saldo = await obtenerSaldoOrden(sesion.accessToken, ordenId);
+      if (saldo.cantidadSubcuentas !== 0) {
+        throw new Error("Esta orden ya tiene subcuentas. Utiliza el registro de pagos existente para evitar duplicados.");
+      }
+      await dividirCuentaIguales(sesion.accessToken, ordenId, ["Cuenta completa"]);
+      setVersionActualizacion((actual) => actual + 1);
+      await actualizarSaldoOrden(ordenId);
+    } catch (err) {
+      setErrorCobroCompleto(err.message || "No se pudo preparar el cobro completo.");
+      await actualizarSaldoOrden(ordenId);
+    } finally {
+      setPreparandoCobroCompleto(false);
+    }
+  };
+
+  const actualizarResumen = async () => {
+    if (!caja?.id) return;
+    try {
+      const r = await obtenerResumenCaja(sesion.accessToken, caja.id);
+      setResumen(r);
+      setErrorResumen("");
+    } catch (e) {
+      setErrorResumen(e.message);
+    }
+  };
+
+  const confirmarCierre = async (evento) => {
+    evento.preventDefault();
+    setMensajeArqueo("");
+    if (ordenes.length > 0) {
+      setMensajeArqueo("No se puede cerrar: existen órdenes activas. Resuélvelas antes del cierre.");
+      return;
+    }
+    if (montoDeclarado.trim() === "" || !Number.isFinite(Number(montoDeclarado)) || Number(montoDeclarado) < 0) {
+      setMensajeArqueo("Ingresa un monto contado válido, mayor o igual a cero.");
+      return;
+    }
+    const diferencia = Number(montoDeclarado) - Number(resumen?.montoFinalEsperado ?? 0);
+    if (!window.confirm(`¿Confirmas el cierre de caja ${caja.id}?\nEfectivo declarado: $${formatoMonto(montoDeclarado)}\nDiferencia: $${formatoMonto(diferencia)}\nEsta operación no se puede deshacer desde la pantalla.`)) return;
+    setCerrando(true);
+    try {
+      await cerrarCajaConArqueo(sesion.accessToken, caja.id, Number(montoDeclarado), observaciones.trim());
+      setMensajeArqueo("Caja cerrada correctamente. Actualiza la pantalla para consultar el estado.");
+      setCaja(null);
+      setResumen(null);
+    } catch (e) {
+      setMensajeArqueo(`No se pudo cerrar la caja: ${e.message}`);
+    } finally {
+      setCerrando(false);
     }
   };
 
@@ -156,6 +263,52 @@ export default function VistaCaja({ sesion }) {
               <p>No hay una caja abierta.</p>
             )}
           </div>
+
+          {caja && (
+            <div className="tarjeta">
+              <h3>Resumen financiero y arqueo — Caja {caja.id}</h3>
+              {errorResumen && <p role="alert">No se pudo consultar el resumen: {errorResumen}</p>}
+              {!resumen && !errorResumen && <p>Cargando resumen financiero...</p>}
+              {resumen && (
+                <>
+                  <table style={{ width: "100%", maxWidth: 600, textAlign: "left" }}>
+                    <tbody>
+                      <tr><th>Monto inicial</th><td>${formatoMonto(caja.montoInicial)}</td></tr>
+                      <tr><th>Pagos de órdenes en efectivo</th><td>${formatoMonto(resumen.pagosPorMetodo?.find((p) => p.metodo === "EFECTIVO")?.total ?? 0)}</td></tr>
+                      <tr><th>Abonos a créditos en efectivo</th><td>${formatoMonto(resumen.abonosPorMetodo?.find((p) => p.metodo === "EFECTIVO")?.total ?? 0)}</td></tr>
+                      <tr><th>Efectivo esperado</th><td><strong>${formatoMonto(resumen.montoFinalEsperado)}</strong></td></tr>
+                      <tr><th>Tarjetas</th><td>${formatoMonto(resumen.totalTarjeta)}</td></tr>
+                      <tr><th>Transferencias</th><td>${formatoMonto(resumen.totalTransferencia)}</td></tr>
+                      <tr><th>Total recibido (sin monto inicial)</th><td>${formatoMonto(Number(resumen.totalPagos) + Number(resumen.totalAbonos))}</td></tr>
+                    </tbody>
+                  </table>
+                  <p><small>Los créditos otorgados no cuentan como dinero recibido hasta registrar sus abonos.</small></p>
+                  <button type="button" onClick={actualizarResumen}>Actualizar resumen</button>
+                  <h4>Arqueo y cierre de caja</h4>
+                  <form onSubmit={confirmarCierre}>
+                    <p>
+                      <label>Efectivo contado físicamente ($){" "}
+                        <input type="number" min="0" step="0.01" required value={montoDeclarado} onChange={(e) => setMontoDeclarado(e.target.value)} />
+                      </label>
+                    </p>
+                    {montoDeclarado !== "" && Number.isFinite(Number(montoDeclarado)) && (
+                      <p><strong>Diferencia (declarado - esperado):</strong> ${formatoMonto(Number(montoDeclarado) - Number(resumen.montoFinalEsperado))}</p>
+                    )}
+                    <p>
+                      <label>Observaciones<br />
+                        <textarea rows={3} maxLength={1000} value={observaciones} onChange={(e) => setObservaciones(e.target.value)} placeholder="Explica sobrantes, faltantes u otras novedades" />
+                      </label>
+                    </p>
+                    {ordenes.length > 0 && <p role="status">Cierre bloqueado: hay {ordenes.length} órdenes activas. Deben resolverse antes de cerrar.</p>}
+                    <button type="submit" disabled={cerrando || ordenes.length > 0}>
+                      {cerrando ? "Cerrando..." : "Confirmar cierre de caja"}
+                    </button>
+                  </form>
+                </>
+              )}
+              {mensajeArqueo && <p role="status">{mensajeArqueo}</p>}
+            </div>
+          )}
 
           <div className="tarjeta">
             <h3>Órdenes activas para cobro ({ordenes.length})</h3>
@@ -277,6 +430,35 @@ export default function VistaCaja({ sesion }) {
                   </div>
                 )}
 
+                {!ordenSeleccionada.errorCobro &&
+                  ordenSeleccionada.saldoPorCubrir > 0 &&
+                  ordenSeleccionada.cantidadSubcuentas === 0 && (
+                    <div className="tarjeta">
+                      <h4>Cobrar orden completa</h4>
+                      <p>Sin dividir entre personas. Puedes combinar los métodos de pago activos, incluido crédito a cliente, hasta cubrir exactamente el saldo.</p>
+                      <button
+                        type="button"
+                        disabled={preparandoCobroCompleto}
+                        onClick={() => prepararCobroCompleto(ordenSeleccionada.id)}
+                      >
+                        {preparandoCobroCompleto ? "Preparando cobro..." : "Cobrar orden completa"}
+                      </button>
+                    </div>
+                  )}
+                {errorCobroCompleto && <p role="alert">{errorCobroCompleto}</p>}
+                {cuentaCompleta && ordenSeleccionada.estado === "ENTREGADA" &&
+                  ordenSeleccionada.saldoPorCubrir > 0 && (
+                    <CobroCombinado
+                      key={`combinado-${ordenSeleccionada.id}`}
+                      token={sesion.accessToken}
+                      ordenId={ordenSeleccionada.id}
+                      saldo={ordenSeleccionada.saldoPorCubrir}
+                      onCobroRegistrado={(resultado) =>
+                        refrescarTrasCobro(ordenSeleccionada.id, resultado.ordenCerrada)
+                      }
+                    />
+                  )}
+
                 <DetalleSubcuentas
                   token={sesion.accessToken}
                   ordenId={ordenSeleccionada.id}
@@ -284,7 +466,8 @@ export default function VistaCaja({ sesion }) {
                 />
 
                 {!ordenSeleccionada.errorCobro &&
-                  ordenSeleccionada.saldoPorCubrir > 0 && (
+                  ordenSeleccionada.saldoPorCubrir > 0 &&
+                  ordenSeleccionada.cantidadSubcuentas === 0 && (
                     <DividirCuentaIguales
                       key={ordenSeleccionada.id}
                       token={sesion.accessToken}
@@ -298,7 +481,8 @@ export default function VistaCaja({ sesion }) {
                   )}
 
                 {!ordenSeleccionada.errorCobro &&
-                  ordenSeleccionada.saldoPorCubrir > 0 && (
+                  ordenSeleccionada.saldoPorCubrir > 0 &&
+                  !cuentaCompleta && (
                     <RegistrarPagoSubcuenta
                       key={`pago-${ordenSeleccionada.id}`}
                       token={sesion.accessToken}
@@ -306,6 +490,7 @@ export default function VistaCaja({ sesion }) {
                       versionActualizacion={versionActualizacion}
                       onPagoRegistrado={(ordenId) => {
                         setVersionActualizacion((actual) => actual + 1);
+                        actualizarResumen();
                         return actualizarSaldoOrden(ordenId);
                       }}
                     />

@@ -322,3 +322,16 @@ export const registrarAbonoCredito = (token, creditoId, valor, metodoPagoId) =>
     headers: authHeaders(token, true),
     body: JSON.stringify({ valor, metodoPagoId }),
   });
+
+// --- Arqueo de caja (Fase 6) ---
+export const obtenerResumenCaja = (token, cajaId) =>
+  pedir(`${API_URL}/cajas/${cajaId}/resumen`, {
+    headers: authHeaders(token),
+  });
+
+export const cerrarCajaConArqueo = (token, cajaId, montoDeclarado, observaciones) =>
+  pedir(`${API_URL}/cajas/${cajaId}/cerrar`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ montoDeclarado, observaciones }),
+  });
