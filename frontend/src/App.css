@@ -1896,3 +1896,16 @@ button:disabled {
     display: block;
   }
 }
+
+/* Historial de órdenes */
+.vista-historial .historial-filtros { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 12px 0; }
+.vista-historial .historial-filtros label { display: flex; flex-direction: column; gap: 5px; flex: 1 1 160px; font-size: 13px; }
+.vista-historial input, .vista-historial select { width: 100%; max-width: 100%; padding: 9px; border: 1px solid #bbb; border-radius: 8px; background: var(--tarjeta); color: inherit; }
+.vista-historial button { padding: 9px 13px; border-radius: 8px; cursor: pointer; }
+.vista-historial .historial-listado { display: grid; gap: 12px; }
+.vista-historial .historial-fila { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }
+.vista-historial .historial-acciones { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.vista-historial .historial-detalle { margin-top: 15px; padding-top: 12px; border-top: 1px solid #ccc; }
+.vista-historial .historial-tabla-contenedor { overflow-x: auto; }
+.vista-historial .historial-tabla { width: 100%; border-collapse: collapse; font-size: 13px; }
+.vista-historial .historial-tabla th, .vista-historial .historial-tabla td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }

@@ -1,8 +1,10 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import VistaMesas from "./vistas/VistaMesas";
 import VistaOrdenes from "./vistas/VistaOrdenes";
 import VistaPerfil from "./vistas/VistaPerfil";
 import VistaCaja from "./vistas/VistaCaja";
+import VistaCreditos from "./vistas/VistaCreditos";
+import VistaHistorial from "./vistas/VistaHistorial";
 import "./App.css";
 
 const CLAVE_VISTA = "meseroapp.ultima-vista";
@@ -18,15 +20,16 @@ const VISTAS = [
   { id: "mesas", icono: "🏠", etiqueta: "Mesas" },
   { id: "ordenes", icono: "📋", etiqueta: "Órdenes" },
   { id: "caja", icono: "💳", etiqueta: "Caja y Cobros" },
+  { id: "creditos", icono: "🧾", etiqueta: "Créditos" },
+  { id: "historial", icono: "📚", etiqueta: "Historial" },
   { id: "perfil", icono: "👤", etiqueta: "Perfil" },
 ];
 
 export default function Dashboard({ sesion, alSalir }) {
-  // Lazy init: arranca en la última pestaña usada (se recuerda entre sesiones)
   const [vista, setVista] = useState(
     () => localStorage.getItem(CLAVE_VISTA) || "mesas",
   );
-  // Mesa precargada cuando el mesero hace "Tomar pedido" en el plano
+
   const [mesaParaOrden, setMesaParaOrden] = useState(null);
 
   useEffect(() => {
@@ -40,6 +43,12 @@ export default function Dashboard({ sesion, alSalir }) {
 
   const { usuario } = sesion;
   const nombre = usuario.nombre || usuario.username;
+
+  const puedeAccederCaja = ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol);
+
+  const vistasDisponibles = VISTAS.filter(
+    (v) => !["caja", "creditos", "historial"].includes(v.id) || puedeAccederCaja,
+  );
 
   return (
     <div className="app">
@@ -55,7 +64,9 @@ export default function Dashboard({ sesion, alSalir }) {
         <div className="chip-usuario">
           <span
             className="avatar-mini"
-            style={{ background: COLORES_ROL[usuario.rol] || "#8A9170" }}
+            style={{
+              background: COLORES_ROL[usuario.rol] || "#8A9170",
+            }}
           >
             {nombre.charAt(0).toUpperCase()}
           </span>
@@ -70,6 +81,7 @@ export default function Dashboard({ sesion, alSalir }) {
         {vista === "mesas" && (
           <VistaMesas sesion={sesion} onTomarPedido={tomarPedidoEnMesa} />
         )}
+
         {vista === "ordenes" && (
           <VistaOrdenes
             sesion={sesion}
@@ -77,9 +89,17 @@ export default function Dashboard({ sesion, alSalir }) {
             alConsumarMesaInicial={() => setMesaParaOrden(null)}
           />
         )}
-        {vista === "caja" && ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol) && (
-          <VistaCaja sesion={sesion} />
+
+        {vista === "caja" && puedeAccederCaja && <VistaCaja sesion={sesion} />}
+
+        {vista === "creditos" && puedeAccederCaja && (
+          <VistaCreditos sesion={sesion} />
         )}
+
+        {vista === "historial" && puedeAccederCaja && (
+          <VistaHistorial sesion={sesion} />
+        )}
+
         {vista === "perfil" && (
           <VistaPerfil sesion={sesion} alSalir={alSalir} />
         )}
@@ -87,7 +107,7 @@ export default function Dashboard({ sesion, alSalir }) {
 
       <nav className="tabs">
         <div className="tabs-interior">
-          {VISTAS.filter((v) => v.id !== "caja" || ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol)).map((v) => (
+          {vistasDisponibles.map((v) => (
             <button
               key={v.id}
               className={`tab ${vista === v.id ? "activo" : ""}`}
@@ -102,4 +122,3 @@ export default function Dashboard({ sesion, alSalir }) {
     </div>
   );
 }
-

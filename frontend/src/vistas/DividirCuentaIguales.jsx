@@ -1,8 +1,5 @@
 ﻿import { useEffect, useRef, useState } from "react";
-import {
-  obtenerSubcuentasOrden,
-  dividirCuentaIguales,
-} from "../api";
+import { obtenerSubcuentasOrden, dividirCuentaIguales } from "../api";
 
 export default function DividirCuentaIguales({
   totalCobrable,
@@ -27,24 +24,24 @@ export default function DividirCuentaIguales({
         if (!activo) return;
 
         if (!Array.isArray(datos)) {
-          throw new Error("Respuesta de subcuentas no válida");
+          throw new Error("Respuesta de subcuentas no válida.");
         }
 
-        setEstadoDivision(
-          datos.length === 0 ? "DISPONIBLE" : "BLOQUEADO"
-        );
+        setEstadoDivision(datos.length === 0 ? "DISPONIBLE" : "BLOQUEADO");
       })
       .catch((err) => {
         if (!activo) return;
         setEstadoDivision("ERROR");
-        setErrorDivision(err.message);
+        setErrorDivision(err.message || "Error al consultar subcuentas.");
       });
 
-
-  return () => {
+    return () => {
       activo = false;
     };
   }, [token, ordenId]);
+
+  const idOrden = Number(ordenId);
+  const ordenValida = Number.isSafeInteger(idOrden) && idOrden > 0;
 
   const total = Number(totalCobrable);
   const totalValido = Number.isFinite(total) && total > 0;
@@ -64,8 +61,8 @@ export default function DividirCuentaIguales({
     setNombres((actuales) =>
       Array.from(
         { length: cantidad },
-        (_, i) => actuales[i] ?? `Persona ${i + 1}`
-      )
+        (_, i) => actuales[i] ?? `Persona ${i + 1}`,
+      ),
     );
   };
 
@@ -80,7 +77,7 @@ export default function DividirCuentaIguales({
       nombresLimpios.length;
 
   const puedeConfirmar =
-    Number(ordenId) === 11 &&
+    ordenValida &&
     estadoDivision === "DISPONIBLE" &&
     totalValido &&
     base > 0 &&
@@ -102,6 +99,7 @@ export default function DividirCuentaIguales({
       }
 
       if (subcuentas.length > 0) {
+        setEstadoDivision("BLOQUEADO");
         throw new Error("Esta orden ya tiene subcuentas registradas.");
       }
 
@@ -109,9 +107,7 @@ export default function DividirCuentaIguales({
 
       setEstadoDivision("BLOQUEADO");
 
-      window.alert(
-        "La división se registró correctamente."
-      );
+      window.alert("La división se registró correctamente.");
 
       if (typeof onDivisionRegistrada === "function") {
         try {
@@ -119,14 +115,16 @@ export default function DividirCuentaIguales({
         } catch (errorActualizacion) {
           console.error(
             "La división se registró, pero falló la actualización visual:",
-            errorActualizacion
+            errorActualizacion,
           );
         }
       }
     } catch (err) {
       setErrorDivision(err.message || "No se pudo registrar la división.");
 
-      setEstadoDivision("ERROR");
+      setEstadoDivision((estadoActual) =>
+        estadoActual === "BLOQUEADO" ? "BLOQUEADO" : "ERROR",
+      );
     } finally {
       envioEnProceso.current = false;
       setGuardando(false);
@@ -153,9 +151,7 @@ export default function DividirCuentaIguales({
       )}
 
       {estadoDivision === "ERROR" && (
-        <p role="alert">
-          No se pudo verificar la división: {errorDivision}
-        </p>
+        <p role="alert">No se pudo verificar la división: {errorDivision}</p>
       )}
 
       {estadoDivision === "DISPONIBLE" && (
@@ -166,42 +162,42 @@ export default function DividirCuentaIguales({
         disabled={estadoDivision !== "DISPONIBLE" || guardando}
         style={{ border: "none", padding: 0, margin: 0 }}
       >
-      <label htmlFor="cantidad-personas">Cantidad de personas:</label>{" "}
-      <input
-        id="cantidad-personas"
-        type="number"
-        min="1"
-        max="50"
-        value={nombres.length}
-        onChange={(e) => cambiarCantidad(Number(e.target.value))}
-      />
+        <label htmlFor="cantidad-personas">Cantidad de personas:</label>{" "}
+        <input
+          id="cantidad-personas"
+          type="number"
+          min="1"
+          max="50"
+          value={nombres.length}
+          onChange={(e) => cambiarCantidad(Number(e.target.value))}
+        />
+        <h4>Distribución propuesta</h4>
+        {nombres.map((nombre, i) => {
+          const importe = base + (i < resto ? 1 : 0);
 
-      <h4>Distribución propuesta</h4>
-
-      {nombres.map((nombre, i) => {
-        const importe = base + (i < resto ? 1 : 0);
-
-
-  return (
-          <div key={i} style={{ marginBottom: "12px" }}>
-            <input
-              type="text"
-              maxLength={100}
-              value={nombre}
-              aria-label={`Nombre de persona ${i + 1}`}
-              onChange={(e) => {
-                const copia = [...nombres];
-                copia[i] = e.target.value;
-                setNombres(copia);
-              }}
-            />
-            {" — "}
-            <strong>{formatoMonto(importe)}</strong>
-          </div>
-        );
-      })}
-
+          return (
+            <div key={i} style={{ marginBottom: "12px" }}>
+              <input
+                type="text"
+                maxLength={100}
+                value={nombre}
+                aria-label={`Nombre de persona ${i + 1}`}
+                onChange={(e) => {
+                  const copia = [...nombres];
+                  copia[i] = e.target.value;
+                  setNombres(copia);
+                }}
+              />
+              {" — "}
+              <strong>{formatoMonto(importe)}</strong>
+            </div>
+          );
+        })}
       </fieldset>
+
+      {!ordenValida && (
+        <p role="alert">No se ha seleccionado una orden válida.</p>
+      )}
 
       {!totalValido && (
         <p role="alert">La orden no tiene un total válido para dividir.</p>
@@ -230,7 +226,7 @@ export default function DividirCuentaIguales({
         type="button"
         disabled={!puedeConfirmar}
         onClick={() => {
-          if (!puedeConfirmar || Number(ordenId) !== 11) return;
+          if (!puedeConfirmar || envioEnProceso.current) return;
 
           const resumen = nombresLimpios
             .map((nombre, i) => {
@@ -242,7 +238,7 @@ export default function DividirCuentaIguales({
           const confirmado = window.confirm(
             `¿Registrar realmente la división de la orden ${ordenId}?\n\n` +
               resumen +
-              "\n\nEsta operación guardará las subcuentas en PostgreSQL."
+              "\n\nEsta operación guardará las subcuentas en PostgreSQL.",
           );
 
           if (!confirmado) return;
@@ -250,30 +246,8 @@ export default function DividirCuentaIguales({
           registrarDivision();
         }}
       >
-        Confirmar división
+        {guardando ? "Registrando división..." : "Confirmar división"}
       </button>
-
-      <p>
-        <small>
-          Prueba controlada: el registro está habilitado únicamente para la orden ORD-000011.
-        </small>
-      </p>
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

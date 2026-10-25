@@ -39,6 +39,13 @@ export class CobrosController {
   obtenerSubcuentas(@Param('id', ParseIntPipe) id: number) {
     return this.cobrosService.obtenerSubcuentas(id);
   }
+
+  @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
+  @Get('creditos')
+  obtenerCreditos() {
+    return this.cobrosService.obtenerCreditos();
+  }
+
   @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
   @Post('orden/:id/dividir')
   dividirCuenta(
@@ -77,5 +84,4 @@ export class CobrosController {
   ) {
     return this.cobrosService.registrarAbono(creditoId, dto);
   }
-
 }

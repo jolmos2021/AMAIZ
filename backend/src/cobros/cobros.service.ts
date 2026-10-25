@@ -264,6 +264,39 @@ export class CobrosService {
     );
   }
 
+  async obtenerCreditos() {
+    return this.dataSource.query(`
+      SELECT
+        c.id::text AS id,
+        c.cliente_id::text AS cliente_id,
+        cl.nombre AS cliente_nombre,
+        cl.telefono AS cliente_telefono,
+        cl.tipo AS cliente_tipo,
+        c.orden_id::text AS orden_id,
+        o.codigo_orden,
+        o.tipo_consumo,
+        c.subcuenta_id::text AS subcuenta_id,
+        c.valor_total::numeric AS valor_total,
+        COALESCE(SUM(a.valor_abonado), 0)::numeric AS total_abonado,
+        c.saldo_pendiente::numeric AS saldo_pendiente,
+        c.estado,
+        COUNT(a.id)::int AS cantidad_abonos,
+        c.created_at
+      FROM creditos_clientes c
+      JOIN clientes cl ON cl.id = c.cliente_id
+      JOIN ordenes o ON o.id = c.orden_id
+      LEFT JOIN abonos_credito a ON a.credito_id = c.id
+      GROUP BY
+        c.id,
+        cl.nombre,
+        cl.telefono,
+        cl.tipo,
+        o.codigo_orden,
+        o.tipo_consumo
+      ORDER BY c.created_at DESC, c.id DESC
+    `);
+  }
+
   async dividirCuenta(ordenId: number, dto: DividirCuentaDto) {
     return this.dataSource.transaction(async (manager) => {
       // Bloqueo de la orden: evita divisiones y cobros simultáneos.

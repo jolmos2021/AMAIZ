@@ -8,7 +8,6 @@ import {
   crearCliente,
 } from "../api";
 
-const ORDEN_PRUEBA_ID = 11;
 const moneda = (valor) =>
   `$${Number(valor).toLocaleString("es-CL", {
     minimumFractionDigits: 2,
@@ -47,7 +46,8 @@ export default function RegistrarPagoSubcuenta({
   const [creandoCliente, setCreandoCliente] = useState(false);
   const envioEnProceso = useRef(false);
   const busquedaEnProceso = useRef(0);
-  const esOrdenPrueba = Number(ordenId) === ORDEN_PRUEBA_ID;
+  const idOrden = Number(ordenId);
+  const ordenValida = Number.isSafeInteger(idOrden) && idOrden > 0;
 
   useEffect(() => {
     let activo = true;
@@ -64,7 +64,7 @@ export default function RegistrarPagoSubcuenta({
     setMostrarNuevoCliente(false);
     setCargando(true);
 
-    if (!esOrdenPrueba || !token) {
+    if (!ordenValida || !token) {
       setCargando(false);
       return () => {
         activo = false;
@@ -96,7 +96,7 @@ export default function RegistrarPagoSubcuenta({
     return () => {
       activo = false;
     };
-  }, [token, ordenId, versionActualizacion, esOrdenPrueba]);
+  }, [token, ordenId, versionActualizacion, ordenValida]);
 
   const subcuentaSeleccionada = subcuentas.find(
     (subcuenta) => Number(subcuenta.id) === Number(subcuentaId),
@@ -122,7 +122,7 @@ export default function RegistrarPagoSubcuenta({
     valorCentavos <= saldoCentavos;
   const tieneCredito = Number(subcuentaSeleccionada?.total_credito ?? 0) > 0;
   const puedeConfirmar =
-    esOrdenPrueba &&
+    ordenValida &&
     !cargando &&
     !guardando &&
     !creandoCliente &&
@@ -196,14 +196,14 @@ export default function RegistrarPagoSubcuenta({
     if (!puedeConfirmar || envioEnProceso.current) return;
     const credito = esCredito;
     const textoConfirmacion = credito
-      ? `¿Registrar realmente este CRÉDITO?\n\n` +
-        `Orden: ORD-000011\n` +
+      ? `¿Registrar realmente este CRÃ‰DITO?\n\n` +
+        `Orden: ${ordenId}\n` +
         `Subcuenta: ${subcuentaSeleccionada.nombre}\n` +
         `Cliente: ${clienteSeleccionado.nombre}\n` +
         `Importe: ${moneda(valorNumerico)}\n\n` +
         `Esta operación creará una deuda real del cliente en PostgreSQL.`
       : `¿Registrar realmente este pago?\n\n` +
-        `Orden: ORD-000011\n` +
+        `Orden: ${ordenId}\n` +
         `Subcuenta: ${subcuentaSeleccionada.nombre}\n` +
         `Método: ${metodoSeleccionado.nombre}\n` +
         `Importe: ${moneda(valorNumerico)}\n\n` +
@@ -298,17 +298,11 @@ export default function RegistrarPagoSubcuenta({
     }
   };
 
-  if (!esOrdenPrueba) return null;
+  if (!ordenValida) return null;
 
   return (
     <section>
       <h4>Registrar pago individual o crédito</h4>
-      <p>
-        <small>
-          Prueba controlada: las operaciones están habilitadas únicamente para
-          la orden ORD-000011.
-        </small>
-      </p>
       {cargando && <p>Consultando información de cobro...</p>}
       {error && <p role="alert">Error: {error}</p>}
       {mensaje && <p role="status">{mensaje}</p>}
@@ -330,7 +324,7 @@ export default function RegistrarPagoSubcuenta({
                 .filter((subcuenta) => Number(subcuenta.saldo_por_cubrir) > 0)
                 .map((subcuenta) => (
                   <option key={subcuenta.id} value={subcuenta.id}>
-                    {subcuenta.nombre} — {moneda(subcuenta.saldo_por_cubrir)}
+                    {subcuenta.nombre} - {moneda(subcuenta.saldo_por_cubrir)}
                   </option>
                 ))}
             </select>
@@ -408,7 +402,7 @@ export default function RegistrarPagoSubcuenta({
                   {clientes.map((cliente) => (
                     <option key={cliente.id} value={cliente.id}>
                       {cliente.nombre}
-                      {cliente.telefono ? ` — ${cliente.telefono}` : ""}
+                      {cliente.telefono ? ` - ${cliente.telefono}` : ""}
                     </option>
                   ))}
                 </select>
@@ -490,8 +484,8 @@ export default function RegistrarPagoSubcuenta({
 
           {subcuentaSeleccionada && valor.trim() !== "" && !valorValido && (
             <p role="alert">
-              Ingresa un importe válido, mayor que cero y que no supere el saldo
-              pendiente.
+              Ingresa un importe válido, mayor que cero y que no supere el
+              saldo pendiente.
             </p>
           )}
           <button

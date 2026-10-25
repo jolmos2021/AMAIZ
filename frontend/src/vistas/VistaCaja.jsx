@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import DetalleSubcuentas from "./DetalleSubcuentas";
 import DividirCuentaIguales from "./DividirCuentaIguales";
 import RegistrarPagoSubcuenta from "./RegistrarPagoSubcuenta";
@@ -298,7 +298,6 @@ export default function VistaCaja({ sesion }) {
                   )}
 
                 {!ordenSeleccionada.errorCobro &&
-                  ordenSeleccionada.id === 11 &&
                   ordenSeleccionada.saldoPorCubrir > 0 && (
                     <RegistrarPagoSubcuenta
                       key={`pago-${ordenSeleccionada.id}`}

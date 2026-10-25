@@ -1,4 +1,4 @@
-﻿const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/api";
 const CLAVE_SESION = "meseroapp.sesion";
 
 export { API_URL };
@@ -119,6 +119,17 @@ export const obtenerMenuDelDia = (token) =>
     headers: authHeaders(token),
   });
 
+// Historial: consulta de órdenes (incluye cerradas y anuladas).
+export const obtenerHistorialOrdenes = (token, desde, hasta) => {
+  const parametros = new URLSearchParams();
+  if (desde) parametros.set("desde", `${desde}T00:00:00`);
+  if (hasta) parametros.set("hasta", `${hasta}T23:59:59.999`);
+  const consulta = parametros.toString();
+  return pedir(`${API_URL}/ordenes${consulta ? `?${consulta}` : ""}`, {
+    headers: authHeaders(token),
+  });
+};
+
 export const obtenerOrdenesActivas = (token) =>
   pedir(`${API_URL}/ordenes/activas`, {
     headers: authHeaders(token),
@@ -200,6 +211,12 @@ export const dividirCuentaIguales = (token, ordenId, nombres) =>
 // Consultar métodos de pago configurados
 export const obtenerMetodosPago = (token) =>
   pedir(`${API_URL}/cobros/metodos`, {
+    headers: authHeaders(token),
+  });
+
+export const obtenerCreditos = (token) =>
+  pedir(`${API_URL}/cobros/creditos`, {
+    method: "GET",
     headers: authHeaders(token),
   });
 
@@ -297,4 +314,11 @@ export const registrarCreditoSubcuenta = (
       clienteId,
       valor,
     }),
+  });
+
+export const registrarAbonoCredito = (token, creditoId, valor, metodoPagoId) =>
+  pedir(`${API_URL}/cobros/creditos/${creditoId}/abonos`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ valor, metodoPagoId }),
   });

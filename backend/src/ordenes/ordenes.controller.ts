@@ -55,6 +55,7 @@ export class OrdenesController {
     return this.ordenesService.listarActivas();
   }
 
+  @Roles(RolUsuario.ADMINISTRADOR, RolUsuario.CAJERO)
   @Get()
   listar(@Query('desde') desde?: string, @Query('hasta') hasta?: string) {
     return this.ordenesService.listar(
