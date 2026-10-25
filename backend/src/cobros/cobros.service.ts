@@ -785,6 +785,20 @@ export class CobrosService {
       const pagadoCentavos = Math.round(Number(pagos[0].pagado) * 100);
 
       const saldoCentavos = totalCentavos - pagadoCentavos;
+      const valorCentavos = Math.round(dto.valor * 100);
+
+      // Validar también en el servicio, antes de escribir en PostgreSQL.
+      if (
+        !Number.isFinite(dto.valor) ||
+        !Number.isSafeInteger(valorCentavos) ||
+        dto.valor <= 0 ||
+        valorCentavos <= 0 ||
+        Math.abs(dto.valor * 100 - valorCentavos) > 0.000001
+      ) {
+        throw new BadRequestException(
+          'El importe del crédito debe ser positivo y tener máximo 2 decimales',
+        );
+      }
 
       if (saldoCentavos <= 0) {
         throw new ConflictException(
@@ -792,7 +806,13 @@ export class CobrosService {
         );
       }
 
-      // 6. Registrar el saldo pendiente como crédito.
+      if (valorCentavos > saldoCentavos) {
+        throw new BadRequestException(
+          `El crédito excede el saldo disponible de ${(saldoCentavos / 100).toFixed(2)}`,
+        );
+      }
+
+      // 6. Registrar únicamente el importe solicitado como crédito.
       const creditos = await manager.query(
         `INSERT INTO creditos_clientes (
          cliente_id,
@@ -808,7 +828,7 @@ export class CobrosService {
           dto.clienteId,
           ordenId,
           dto.subcuentaId,
-          (saldoCentavos / 100).toFixed(2),
+          (valorCentavos / 100).toFixed(2),
         ],
       );
 
@@ -838,7 +858,8 @@ export class CobrosService {
         creditoId: creditos[0].id,
         totalSubcuenta: totalCentavos / 100,
         totalPagado: pagadoCentavos / 100,
-        valorCredito: saldoCentavos / 100,
+        valorCredito: valorCentavos / 100,
+        saldoPendiente: (saldoCentavos - valorCentavos) / 100,
         estado: 'PENDIENTE',
         ordenCerrada,
       };
@@ -1038,5 +1059,4 @@ export class CobrosService {
       };
     });
   }
-
 }

@@ -260,3 +260,41 @@ export async function obtenerSaldoOrden(token, ordenId) {
     cantidadSubcuentas: subcuentas.length,
   };
 }
+
+// --- Clientes ---
+
+// Buscar clientes por nombre o teléfono.
+// Sin término, devuelve los primeros 50 clientes.
+export const buscarClientes = (token, termino = "") =>
+  pedir(`${API_URL}/clientes?q=${encodeURIComponent(termino.trim())}`, {
+    headers: authHeaders(token),
+  });
+
+// Registrar un cliente NORMAL o VIP.
+export const crearCliente = (token, datos) =>
+  pedir(`${API_URL}/clientes`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(datos),
+  });
+
+// --- Créditos ---
+
+// Registrar un crédito parcial o total para una subcuenta.
+// Esta operación crea un crédito real en PostgreSQL.
+export const registrarCreditoSubcuenta = (
+  token,
+  ordenId,
+  subcuentaId,
+  clienteId,
+  valor,
+) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}/credito`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({
+      subcuentaId,
+      clienteId,
+      valor,
+    }),
+  });
