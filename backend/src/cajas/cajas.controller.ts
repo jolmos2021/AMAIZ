@@ -12,6 +12,7 @@ import {
 import { CajasService } from './cajas.service';
 import { AbrirCajaDto } from './dto/abrir-caja.dto';
 import { CerrarCajaDto } from './dto/cerrar-caja.dto';
+import { CrearMovimientoCajaDto } from './dto/crear-movimiento-caja.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -51,6 +52,22 @@ export class CajasController {
     @Body() dto: CerrarCajaDto,
   ) {
     return this.cajasService.cerrar(id, req.user.userId, req.user.rol, dto);
+  }
+
+  @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
+  @Post(':id/movimientos')
+  registrarMovimiento(
+    @Param('id', ParseIntPipe) id: number,
+    @Request() req: { user: { userId: number; rol: string } },
+    @Body() dto: CrearMovimientoCajaDto,
+  ) {
+    return this.cajasService.registrarMovimiento(id, req.user.userId, req.user.rol, dto);
+  }
+
+  @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
+  @Get(':id/movimientos')
+  listarMovimientos(@Param('id', ParseIntPipe) id: number) {
+    return this.cajasService.listarMovimientos(id);
   }
 
   // ----- INFORMACIÓN (todo / restringido según endpoint) -----

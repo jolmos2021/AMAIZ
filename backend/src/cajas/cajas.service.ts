@@ -11,14 +11,18 @@ import { Caja, EstadoCaja } from './entities/caja.entity';
 import { AbrirCajaDto } from './dto/abrir-caja.dto';
 import { CerrarCajaDto } from './dto/cerrar-caja.dto';
 import { RolUsuario } from '../usuarios/entities/usuario.entity';
+import { CrearMovimientoCajaDto } from './dto/crear-movimiento-caja.dto';
 
 /** Caja + nombre del cajero (JOIN manual — nunca la entidad Usuario completa) */
 export interface CajaConCajero extends Caja {
   cajeroNombre: string | null;
+  responsableCierreNombre: string | null;
 }
 
 export interface DetalleCierreCaja {
   montoInicial: number;
+  totalIngresosManuales: number;
+  totalEgresosManuales: number;
   totalPagos: number;
   totalAbonos: number;
   montoFinalCalculado: number; // efectivo esperado
@@ -47,10 +51,16 @@ export class CajasService {
 
   private async conCajero(caja: Caja): Promise<CajaConCajero> {
     const filas = await this.dataSource.query(
-      'SELECT nombre FROM usuarios WHERE id = $1',
-      [caja.usuarioId],
+      `SELECT apertura.nombre AS "cajeroNombre",
+              cierre.nombre AS "responsableCierreNombre"
+         FROM cajas c
+         LEFT JOIN usuarios apertura ON apertura.id = c.usuario_id
+         LEFT JOIN usuarios cierre ON cierre.id = c.usuario_cierre_id
+        WHERE c.id = $1`,
+      [caja.id],
     );
-    return { ...caja, cajeroNombre: filas[0]?.nombre ?? null };
+    return { ...caja, cajeroNombre: filas[0]?.cajeroNombre ?? null,
+      responsableCierreNombre: filas[0]?.responsableCierreNombre ?? null };
   }
 
   // ---------- Consultas ----------
@@ -76,7 +86,8 @@ export class CajasService {
     const cajas = await this.repo.find({ order: { fechaApertura: 'DESC' } });
     if (cajas.length === 0) return [];
 
-    const ids = [...new Set(cajas.map((c) => c.usuarioId))];
+    const ids = [...new Set(cajas.flatMap((c) =>
+      [c.usuarioId, c.usuarioCierreId].filter((id): id is number => id != null)))];
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
     const filas = await this.dataSource.query(
       `SELECT id, nombre FROM usuarios WHERE id IN (${placeholders})`,
@@ -91,6 +102,8 @@ export class CajasService {
     return cajas.map((c) => ({
       ...c,
       cajeroNombre: nombres.get(Number(c.usuarioId)) ?? null,
+      responsableCierreNombre: c.usuarioCierreId == null
+        ? null : nombres.get(Number(c.usuarioCierreId)) ?? null,
     }));
   }
 
@@ -138,6 +151,57 @@ export class CajasService {
 
       throw error;
     }
+  }
+
+  // ---------- Movimientos manuales de EFECTIVO ----------
+
+  async registrarMovimiento(cajaId: number, usuarioId: number, rol: string, dto: CrearMovimientoCajaDto) {
+    if (rol !== RolUsuario.CAJERO && rol !== RolUsuario.ADMINISTRADOR) {
+      throw new ForbiddenException('Solo cajeros y administradores pueden registrar movimientos');
+    }
+    const concepto = dto.concepto?.trim();
+    if (!concepto) throw new BadRequestException('El concepto es obligatorio');
+    if (!Number.isFinite(dto.monto) || dto.monto <= 0 || Math.abs(Math.round(dto.monto * 100) - dto.monto * 100) > 1e-7) {
+      throw new BadRequestException('El monto debe ser positivo y tener máximo dos decimales');
+    }
+    return this.dataSource.transaction(async (manager) => {
+      const cajas: { id: string; estado: string }[] = await manager.query(
+        'SELECT id, estado FROM cajas WHERE id = $1 FOR UPDATE', [cajaId],
+      );
+      if (!cajas.length) throw new NotFoundException(`No existe una caja con id ${cajaId}`);
+      if (cajas[0].estado !== EstadoCaja.ABIERTA) {
+        throw new BadRequestException('Solo se permiten movimientos en cajas abiertas');
+      }
+      const registros = await manager.query(
+        `INSERT INTO movimientos_caja (caja_id, tipo, monto, concepto, usuario_id)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, caja_id AS "cajaId", tipo, monto::float8 AS monto,
+                   concepto, usuario_id AS "usuarioId", fecha`,
+        [cajaId, dto.tipo, dto.monto.toFixed(2), concepto, usuarioId],
+      );
+      return registros[0];
+    });
+  }
+
+  async listarMovimientos(cajaId: number) {
+    await this.obtenerPorId(cajaId);
+    return this.dataSource.query(
+      `SELECT m.id, m.caja_id AS "cajaId", m.tipo, m.monto::float8 AS monto,
+              m.concepto, m.usuario_id AS "usuarioId", u.nombre AS "usuarioNombre", m.fecha
+         FROM movimientos_caja m
+         JOIN usuarios u ON u.id = m.usuario_id
+        WHERE m.caja_id = $1 ORDER BY m.fecha DESC, m.id DESC`,
+      [cajaId],
+    );
+  }
+
+  private async totalizarMovimientosManuales(cajaId: number, consultar: (sql: string, params: unknown[]) => Promise<any[]>) {
+    const filas: { tipo: string; total: string }[] = await consultar(
+      `SELECT tipo, COALESCE(SUM(monto), 0)::text AS total
+         FROM movimientos_caja WHERE caja_id = $1 GROUP BY tipo`, [cajaId],
+    );
+    const total = (tipo: string) => this.redondear(Number(filas.find(f => f.tipo === tipo)?.total ?? 0));
+    return { totalIngresosManuales: total('INGRESO'), totalEgresosManuales: total('EGRESO') };
   }
 
   // ---------- Cierre ----------
@@ -230,7 +294,11 @@ export class CajasService {
       const totalEfectivo = sumar('EFECTIVO');
       const totalTarjeta = sumar('TARJETA');
       const totalTransferencia = sumar('TRANSFERENCIA');
-      const montoFinalCalculado = this.redondear(montoInicial + totalEfectivo);
+      const { totalIngresosManuales, totalEgresosManuales } =
+        await this.totalizarMovimientosManuales(cajaId, (sql, params) => manager.query(sql, params));
+      const montoFinalCalculado = this.redondear(
+        montoInicial + totalEfectivo + totalIngresosManuales - totalEgresosManuales,
+      );
       const montoDeclarado = this.redondear(dto.montoDeclarado);
       const diferencia = this.redondear(montoDeclarado - montoFinalCalculado);
 
@@ -242,11 +310,12 @@ export class CajasService {
                 monto_final = $2,
                 monto_declarado = $3,
                 diferencia = $4,
-                observaciones = $5
+                observaciones = $5,
+                usuario_cierre_id = $6
           WHERE id = $1 AND estado = 'ABIERTA'
           RETURNING id`,
         [cajaId, montoFinalCalculado.toFixed(2), montoDeclarado.toFixed(2),
-         diferencia.toFixed(2), dto.observaciones?.trim() || null],
+         diferencia.toFixed(2), dto.observaciones?.trim() || null, usuarioId],
       );
       if (!actualizadas.length) {
         throw new ConflictException('La caja cambió de estado durante el cierre');
@@ -254,6 +323,8 @@ export class CajasService {
 
       const detalle: DetalleCierreCaja = {
         montoInicial: this.redondear(montoInicial),
+        totalIngresosManuales,
+        totalEgresosManuales,
         totalPagos,
         totalAbonos,
         totalEfectivo,
@@ -324,6 +395,9 @@ export class CajasService {
         .reduce((total, m) => total + m.total, 0),
     );
 
+    const { totalIngresosManuales, totalEgresosManuales } =
+      await this.totalizarMovimientosManuales(cajaId, (sql, params) => this.dataSource.query(sql, params));
+
     return {
       caja,
       pagosPorMetodo,
@@ -333,7 +407,11 @@ export class CajasService {
       totalEfectivo,
       totalTarjeta,
       totalTransferencia,
-      montoFinalEsperado: this.redondear(caja.montoInicial + totalEfectivo),
+      totalIngresosManuales,
+      totalEgresosManuales,
+      montoFinalEsperado: this.redondear(
+        caja.montoInicial + totalEfectivo + totalIngresosManuales - totalEgresosManuales,
+      ),
     };
   }
 }

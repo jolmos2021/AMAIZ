@@ -183,6 +183,14 @@ export const obtenerCajaActual = (token) =>
     headers: authHeaders(token),
   });
 
+// Abrir un turno de caja; el backend obtiene el responsable del token JWT.
+export const abrirCaja = (token, montoInicial) =>
+  pedir(`${API_URL}/cajas/abrir`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ montoInicial }),
+  });
+
 // Consultar detalle y total cobrable de una orden
 export const obtenerDetalleCobro = (token, ordenId) =>
   pedir(`${API_URL}/cobros/orden/${ordenId}`, {
@@ -335,3 +343,20 @@ export const cerrarCajaConArqueo = (token, cajaId, montoDeclarado, observaciones
     headers: authHeaders(token, true),
     body: JSON.stringify({ montoDeclarado, observaciones }),
   });
+
+// --- Movimientos manuales de efectivo (Fase 6) ---
+export const obtenerMovimientosCaja = (token, cajaId) =>
+  pedir(`${API_URL}/cajas/${cajaId}/movimientos`, {
+    headers: authHeaders(token),
+  });
+
+export const registrarMovimientoCaja = (token, cajaId, movimiento) =>
+  pedir(`${API_URL}/cajas/${cajaId}/movimientos`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(movimiento),
+  });
+
+// --- Historial de turnos de caja (lectura, Fase 6) ---
+export const listarCajas = (token) =>
+  pedir(`${API_URL}/cajas`, { headers: authHeaders(token) });

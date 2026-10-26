@@ -50,6 +50,10 @@ export class Caja {
   @Column({ name: 'observaciones', type: 'text', nullable: true })
   observaciones?: string;
 
+  // Responsable real del cierre; null en cierres anteriores a esta actualización.
+  @Column({ name: 'usuario_cierre_id', type: 'bigint', nullable: true })
+  usuarioCierreId?: number | null;
+
   @Column({ name: 'usuario_id' })
   usuarioId: number;
 

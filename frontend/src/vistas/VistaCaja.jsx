@@ -5,9 +5,13 @@ import RegistrarPagoSubcuenta from "./RegistrarPagoSubcuenta";
 import CobroCombinado from "./CobroCombinado";
 import {
   obtenerCajaActual,
+  listarCajas,
+  abrirCaja,
   obtenerOrdenesActivas,
   obtenerSaldoOrden,
   obtenerResumenCaja,
+  obtenerMovimientosCaja,
+  registrarMovimientoCaja,
   cerrarCajaConArqueo,
   dividirCuentaIguales,
   obtenerSubcuentasOrden,
@@ -15,6 +19,9 @@ import {
 
 export default function VistaCaja({ sesion }) {
   const [caja, setCaja] = useState(null);
+  const [montoInicialApertura, setMontoInicialApertura] = useState("0");
+  const [abriendoCaja, setAbriendoCaja] = useState(false);
+  const [mensajeApertura, setMensajeApertura] = useState("");
   const [ordenes, setOrdenes] = useState([]);
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState(null);
   const [versionActualizacion, setVersionActualizacion] = useState(0);
@@ -29,6 +36,20 @@ export default function VistaCaja({ sesion }) {
   const [errorCobroCompleto, setErrorCobroCompleto] = useState("");
   const [mensajeArqueo, setMensajeArqueo] = useState("");
   const [cuentaCompleta, setCuentaCompleta] = useState(false);
+  const [movimientos, setMovimientos] = useState([]);
+  const [cargandoMovimientos, setCargandoMovimientos] = useState(false);
+  const [errorMovimientos, setErrorMovimientos] = useState("");
+  const [tipoMovimiento, setTipoMovimiento] = useState("INGRESO");
+  const [montoMovimiento, setMontoMovimiento] = useState("");
+  const [conceptoMovimiento, setConceptoMovimiento] = useState("");
+  const [registrandoMovimiento, setRegistrandoMovimiento] = useState(false);
+  const [mensajeMovimiento, setMensajeMovimiento] = useState("");
+  const [historialCajas, setHistorialCajas] = useState([]);
+  const [cargandoHistorial, setCargandoHistorial] = useState(false);
+  const [errorHistorial, setErrorHistorial] = useState("");
+  const [detalleHistorico, setDetalleHistorico] = useState(null);
+  const [cargandoDetalleHistorico, setCargandoDetalleHistorico] = useState(false);
+  const [errorDetalleHistorico, setErrorDetalleHistorico] = useState("");
 
   useEffect(() => {
     let activo = true;
@@ -78,7 +99,18 @@ export default function VistaCaja({ sesion }) {
           setOrdenes(resultados);
           setResumen(null);
           setErrorResumen("");
+          setMovimientos([]);
+          setErrorMovimientos("");
           if (cajaActual?.id) {
+            setCargandoMovimientos(true);
+            obtenerMovimientosCaja(token, cajaActual.id)
+              .then((lista) => {
+                if (!activo) return;
+                if (!Array.isArray(lista)) throw new Error("Respuesta de movimientos no válida.");
+                setMovimientos(lista);
+              })
+              .catch((e) => { if (activo) setErrorMovimientos(e.message); })
+              .finally(() => { if (activo) setCargandoMovimientos(false); });
             obtenerResumenCaja(token, cajaActual.id)
               .then((r) => { if (activo) setResumen(r); })
               .catch((e) => { if (activo) setErrorResumen(e.message); });
@@ -188,6 +220,136 @@ export default function VistaCaja({ sesion }) {
     }
   };
 
+  const actualizarMovimientos = async (idCaja = caja?.id) => {
+    if (!idCaja) return;
+    setCargandoMovimientos(true);
+    try {
+      const lista = await obtenerMovimientosCaja(sesion.accessToken, idCaja);
+      if (!Array.isArray(lista)) throw new Error("Respuesta de movimientos no válida.");
+      setMovimientos(lista);
+      setErrorMovimientos("");
+    } catch (e) {
+      setErrorMovimientos(e.message);
+    } finally {
+      setCargandoMovimientos(false);
+    }
+  };
+
+  const confirmarMovimiento = async (evento) => {
+    evento.preventDefault();
+    if (!caja?.id || registrandoMovimiento) return;
+    setMensajeMovimiento("");
+    const textoMonto = montoMovimiento.trim();
+    const monto = Number(textoMonto);
+    const concepto = conceptoMovimiento.trim();
+    if (!/^\d+(?:\.\d{1,2})?$/.test(textoMonto) || !Number.isFinite(monto) || monto <= 0) {
+      setMensajeMovimiento("Ingresa un monto positivo con máximo dos decimales (usa punto decimal).");
+      return;
+    }
+    if (!concepto || concepto.length > 300) {
+      setMensajeMovimiento("El concepto es obligatorio y no puede superar 300 caracteres.");
+      return;
+    }
+    if (!window.confirm(`¿Registrar ${tipoMovimiento.toLowerCase()} de $${formatoMonto(monto)} en caja ${caja.id}?\nConcepto: ${concepto}\nSe guardará como movimiento contable real.`)) return;
+    setRegistrandoMovimiento(true);
+    try {
+      const nuevo = await registrarMovimientoCaja(sesion.accessToken, caja.id, {
+        tipo: tipoMovimiento,
+        monto,
+        concepto,
+      });
+      setMovimientos((actuales) => [nuevo, ...actuales.filter((m) => String(m.id) !== String(nuevo.id))]);
+      setMontoMovimiento("");
+      setConceptoMovimiento("");
+      setMensajeMovimiento(`Movimiento ${nuevo.id} registrado correctamente.`);
+      await Promise.all([actualizarResumen(), actualizarMovimientos(caja.id)]);
+    } catch (e) {
+      setMensajeMovimiento(`No se pudo confirmar el movimiento: ${e.message}. Si hubo un problema de conexión, consulta el historial antes de reintentarlo.`);
+      await actualizarMovimientos(caja.id);
+    } finally {
+      setRegistrandoMovimiento(false);
+    }
+  };
+
+  const actualizarHistorial = async () => {
+    setCargandoHistorial(true);
+    setErrorHistorial("");
+    try {
+      const lista = await listarCajas(sesion.accessToken);
+      if (!Array.isArray(lista)) throw new Error("La respuesta del historial no es válida.");
+      setHistorialCajas(lista.filter((item) => item.estado === "CERRADA"));
+    } catch (e) {
+      setErrorHistorial(e.message);
+    } finally {
+      setCargandoHistorial(false);
+    }
+  };
+
+  const consultarCierreHistorico = async (cajaHistorica) => {
+    if (detalleHistorico?.caja?.id === cajaHistorica.id) {
+      setDetalleHistorico(null);
+      return;
+    }
+    setCargandoDetalleHistorico(true);
+    setErrorDetalleHistorico("");
+    setDetalleHistorico(null);
+    try {
+      const resumenHistorico = await obtenerResumenCaja(sesion.accessToken, cajaHistorica.id);
+      setDetalleHistorico({ caja: cajaHistorica, resumen: resumenHistorico });
+    } catch (e) {
+      setErrorDetalleHistorico(e.message);
+    } finally {
+      setCargandoDetalleHistorico(false);
+    }
+  };
+
+  const confirmarApertura = async (evento) => {
+    evento.preventDefault();
+    if (abriendoCaja || caja) return;
+    setMensajeApertura("");
+    const monto = Number(montoInicialApertura);
+    if (montoInicialApertura.trim() === "" || !Number.isFinite(monto) || monto < 0 ||
+        !/^\d+(?:\.\d{1,2})?$/.test(montoInicialApertura.trim())) {
+      setMensajeApertura("Ingresa un monto inicial válido, mayor o igual a cero y con máximo dos decimales.");
+      return;
+    }
+    setAbriendoCaja(true);
+    try {
+      // Verificar nuevamente antes de enviar, por si otro cajero abrió el turno.
+      const existente = await obtenerCajaActual(sesion.accessToken);
+      if (existente) {
+        setCaja(existente);
+        setMensajeApertura(`La caja ${existente.id} ya está abierta. No se creó otra.`);
+        return;
+      }
+      const nuevaCaja = await abrirCaja(sesion.accessToken, monto);
+      setCaja(nuevaCaja);
+      setMovimientos([]);
+      setMontoInicialApertura("0");
+      setResumen(null);
+      setErrorResumen("");
+      setMensajeApertura(`Caja ${nuevaCaja.id} abierta correctamente.`);
+      try {
+        const nuevoResumen = await obtenerResumenCaja(sesion.accessToken, nuevaCaja.id);
+        setResumen(nuevoResumen);
+      } catch (err) {
+        setErrorResumen(err.message);
+      }
+    } catch (err) {
+      setMensajeApertura(`No se pudo abrir la caja: ${err.message}`);
+      // Si otro usuario la abrió al mismo tiempo, actualizar el estado visible.
+      try {
+        const actual = await obtenerCajaActual(sesion.accessToken);
+        if (actual) {
+          setCaja(actual);
+          setResumen(await obtenerResumenCaja(sesion.accessToken, actual.id));
+        }
+      } catch { /* El mensaje original se mantiene. */ }
+    } finally {
+      setAbriendoCaja(false);
+    }
+  };
+
   const confirmarCierre = async (evento) => {
     evento.preventDefault();
     setMensajeArqueo("");
@@ -207,6 +369,7 @@ export default function VistaCaja({ sesion }) {
       setMensajeArqueo("Caja cerrada correctamente. Actualiza la pantalla para consultar el estado.");
       setCaja(null);
       setResumen(null);
+      setMovimientos([]);
     } catch (e) {
       setMensajeArqueo(`No se pudo cerrar la caja: ${e.message}`);
     } finally {
@@ -260,8 +423,31 @@ export default function VistaCaja({ sesion }) {
                 </p>
               </>
             ) : (
-              <p>No hay una caja abierta.</p>
+              <>
+                <p>No hay una caja abierta.</p>
+                <form onSubmit={confirmarApertura}>
+                  <p>
+                    <label>
+                      Monto inicial en efectivo ($){" "}
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        required
+                        value={montoInicialApertura}
+                        onChange={(e) => setMontoInicialApertura(e.target.value)}
+                        disabled={abriendoCaja}
+                      />
+                    </label>
+                  </p>
+                  <p><small>El responsable y la fecha de apertura se registran automáticamente al confirmar.</small></p>
+                  <button type="submit" disabled={abriendoCaja}>
+                    {abriendoCaja ? "Abriendo caja..." : "Abrir caja"}
+                  </button>
+                </form>
+              </>
             )}
+            {mensajeApertura && <p role="status">{mensajeApertura}</p>}
           </div>
 
           {caja && (
@@ -276,6 +462,8 @@ export default function VistaCaja({ sesion }) {
                       <tr><th>Monto inicial</th><td>${formatoMonto(caja.montoInicial)}</td></tr>
                       <tr><th>Pagos de órdenes en efectivo</th><td>${formatoMonto(resumen.pagosPorMetodo?.find((p) => p.metodo === "EFECTIVO")?.total ?? 0)}</td></tr>
                       <tr><th>Abonos a créditos en efectivo</th><td>${formatoMonto(resumen.abonosPorMetodo?.find((p) => p.metodo === "EFECTIVO")?.total ?? 0)}</td></tr>
+                      <tr><th>Ingresos manuales en efectivo</th><td>+${formatoMonto(resumen.totalIngresosManuales ?? 0)}</td></tr>
+                      <tr><th>Egresos manuales en efectivo</th><td>−${formatoMonto(resumen.totalEgresosManuales ?? 0)}</td></tr>
                       <tr><th>Efectivo esperado</th><td><strong>${formatoMonto(resumen.montoFinalEsperado)}</strong></td></tr>
                       <tr><th>Tarjetas</th><td>${formatoMonto(resumen.totalTarjeta)}</td></tr>
                       <tr><th>Transferencias</th><td>${formatoMonto(resumen.totalTransferencia)}</td></tr>
@@ -309,6 +497,117 @@ export default function VistaCaja({ sesion }) {
               {mensajeArqueo && <p role="status">{mensajeArqueo}</p>}
             </div>
           )}
+
+          {caja && (
+            <div className="tarjeta">
+              <h3>Movimientos manuales de efectivo — Caja {caja.id}</h3>
+              <p><small>Los ingresos y egresos modifican el efectivo esperado del arqueo. Cada registro es real y queda asociado al usuario de la sesión.</small></p>
+              <form onSubmit={confirmarMovimiento}>
+                <p>
+                  <label>Tipo de movimiento{" "}
+                    <select value={tipoMovimiento} onChange={(e) => setTipoMovimiento(e.target.value)} disabled={registrandoMovimiento}>
+                      <option value="INGRESO">Ingreso de efectivo</option>
+                      <option value="EGRESO">Egreso de efectivo</option>
+                    </select>
+                  </label>
+                </p>
+                <p>
+                  <label>Monto ($){" "}
+                    <input type="number" min="0.01" step="0.01" required value={montoMovimiento} onChange={(e) => setMontoMovimiento(e.target.value)} disabled={registrandoMovimiento} />
+                  </label>
+                </p>
+                <p>
+                  <label>Concepto o motivo<br />
+                    <textarea rows={2} maxLength={300} required value={conceptoMovimiento} onChange={(e) => setConceptoMovimiento(e.target.value)} disabled={registrandoMovimiento} placeholder="Explica el origen o destino del efectivo" />
+                  </label>
+                </p>
+                <button type="submit" disabled={registrandoMovimiento}>
+                  {registrandoMovimiento ? "Registrando..." : `Registrar ${tipoMovimiento.toLowerCase()}`}
+                </button>
+              </form>
+              {mensajeMovimiento && <p role="status">{mensajeMovimiento}</p>}
+              <h4>Historial de movimientos manuales</h4>
+              <button type="button" disabled={cargandoMovimientos || registrandoMovimiento} onClick={() => actualizarMovimientos()}>
+                {cargandoMovimientos ? "Actualizando..." : "Actualizar movimientos"}
+              </button>
+              {errorMovimientos && <p role="alert">No se pudo consultar el historial: {errorMovimientos}</p>}
+              {!cargandoMovimientos && !errorMovimientos && movimientos.length === 0 && <p>No hay movimientos manuales registrados.</p>}
+              {movimientos.length > 0 && (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", textAlign: "left" }}>
+                    <thead><tr><th>ID</th><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Concepto</th><th>Usuario ID</th></tr></thead>
+                    <tbody>
+                      {[...movimientos].sort((a, b) => Number(b.id) - Number(a.id)).map((movimiento) => (
+                        <tr key={movimiento.id}>
+                          <td>{movimiento.id}</td>
+                          <td>{movimiento.fecha ? new Date(movimiento.fecha).toLocaleString() : "—"}</td>
+                          <td>{movimiento.tipo}</td>
+                          <td>{movimiento.tipo === "EGRESO" ? "−" : "+"}${formatoMonto(movimiento.monto)}</td>
+                          <td>{movimiento.concepto}</td>
+                          <td>{movimiento.usuarioId ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="tarjeta">
+            <h3>Historial de cierres de caja</h3>
+            <p><small>Consulta de turnos cerrados. Esta sección no modifica registros ni cierra la caja actual.</small></p>
+            <button type="button" onClick={actualizarHistorial} disabled={cargandoHistorial}>
+              {cargandoHistorial ? "Consultando historial..." : "Consultar / actualizar historial"}
+            </button>
+            {errorHistorial && <p role="alert">{errorHistorial}</p>}
+            {!cargandoHistorial && !errorHistorial && historialCajas.length === 0 &&
+              <p>No hay cierres cargados. Pulsa «Consultar / actualizar historial».</p>}
+            {historialCajas.length > 0 && (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", textAlign: "left" }}>
+                  <thead><tr><th>Caja</th><th>Apertura</th><th>Cierre</th><th>Responsable de apertura</th><th>Responsable de cierre</th><th>Esperado</th><th>Declarado</th><th>Diferencia</th><th>Detalle</th></tr></thead>
+                  <tbody>
+                    {historialCajas.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.id}</td>
+                        <td>{item.fechaApertura ? new Date(item.fechaApertura).toLocaleString() : "—"}</td>
+                        <td>{item.fechaCierre ? new Date(item.fechaCierre).toLocaleString() : "—"}</td>
+                        <td>{item.cajeroNombre || `Usuario ${item.usuarioId}`}</td>
+                        <td>{item.responsableCierreNombre || (item.usuarioCierreId ? `Usuario ${item.usuarioCierreId}` : "No registrado")}</td>
+                        <td>${formatoMonto(item.montoFinal ?? 0)}</td>
+                        <td>{item.montoDeclarado == null ? "No registrado" : `$${formatoMonto(item.montoDeclarado)}`}</td>
+                        <td>{item.diferencia == null ? "No registrada" : `$${formatoMonto(item.diferencia)}`}</td>
+                        <td><button type="button" disabled={cargandoDetalleHistorico} onClick={() => consultarCierreHistorico(item)}>
+                          {detalleHistorico?.caja?.id === item.id ? "Ocultar" : "Ver detalle"}
+                        </button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {cargandoDetalleHistorico && <p>Consultando detalle del cierre...</p>}
+            {errorDetalleHistorico && <p role="alert">{errorDetalleHistorico}</p>}
+            {detalleHistorico && (
+              <div>
+                <h4>Detalle de caja {detalleHistorico.caja.id}</h4>
+                <p><strong>Responsable de cierre:</strong> {detalleHistorico.caja.responsableCierreNombre || (detalleHistorico.caja.usuarioCierreId ? `Usuario ${detalleHistorico.caja.usuarioCierreId}` : "No registrado")}</p>
+                <p><strong>Observaciones:</strong> {detalleHistorico.caja.observaciones || "Sin observaciones"}</p>
+                <p><strong>Monto inicial:</strong> ${formatoMonto(detalleHistorico.resumen.caja?.montoInicial ?? 0)}</p>
+                <p><strong>Pagos:</strong> ${formatoMonto(detalleHistorico.resumen.totalPagos)}</p>
+                <p><strong>Abonos a créditos:</strong> ${formatoMonto(detalleHistorico.resumen.totalAbonos)}</p>
+                <p><strong>Efectivo recibido:</strong> ${formatoMonto(detalleHistorico.resumen.totalEfectivo)}</p>
+                <p><strong>Tarjeta:</strong> ${formatoMonto(detalleHistorico.resumen.totalTarjeta)}</p>
+                <p><strong>Transferencia:</strong> ${formatoMonto(detalleHistorico.resumen.totalTransferencia)}</p>
+                <p><strong>Ingresos manuales:</strong> ${formatoMonto(detalleHistorico.resumen.totalIngresosManuales)}</p>
+                <p><strong>Egresos manuales:</strong> ${formatoMonto(detalleHistorico.resumen.totalEgresosManuales)}</p>
+                <p><strong>Efectivo esperado al cierre (registrado):</strong> ${formatoMonto(detalleHistorico.caja.montoFinal ?? 0)}</p>
+                <p><strong>Efectivo declarado:</strong> {detalleHistorico.caja.montoDeclarado == null ? "No registrado" : `$${formatoMonto(detalleHistorico.caja.montoDeclarado)}`}</p>
+                <p><strong>Diferencia:</strong> {detalleHistorico.caja.diferencia == null ? "No registrada" : `$${formatoMonto(detalleHistorico.caja.diferencia)}`}</p>
+              </div>
+            )}
+          </div>
 
           <div className="tarjeta">
             <h3>Órdenes activas para cobro ({ordenes.length})</h3>
