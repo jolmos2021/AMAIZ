@@ -745,7 +745,7 @@ export default function VistaCaja({ sesion }) {
                     </div>
                   )}
                 {errorCobroCompleto && <p role="alert">{errorCobroCompleto}</p>}
-                {cuentaCompleta && ordenSeleccionada.estado === "ENTREGADA" &&
+                {cuentaCompleta && !["CERRADA", "ANULADA"].includes(ordenSeleccionada.estado) &&
                   ordenSeleccionada.saldoPorCubrir > 0 && (
                     <CobroCombinado
                       key={`combinado-${ordenSeleccionada.id}`}

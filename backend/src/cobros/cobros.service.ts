@@ -750,8 +750,10 @@ export class CobrosService {
       );
       if (!ordenes.length) throw new NotFoundException(`No existe la orden ${ordenId}`);
       const orden = ordenes[0];
-      if (orden.estado !== 'ENTREGADA') {
-        throw new ConflictException('La orden debe estar ENTREGADA para el cobro combinado');
+      // El cobro financiero puede anticiparse a la entrega. La orden conserva
+      // su estado operativo hasta que cocina y entrega terminen.
+      if (!['CREADA', 'PROCESANDO', 'LISTA', 'ENTREGADA'].includes(orden.estado)) {
+        throw new ConflictException('No se puede cobrar una orden cerrada o anulada');
       }
 
       const cajas = await manager.query(
@@ -883,10 +885,9 @@ export class CobrosService {
         }
       }
 
+      // El pago queda confirmado incluso si la orden sigue en preparación.
+      // intentarLiquidarOrden solo cierra órdenes ENTREGADAS y totalmente cubiertas.
       const ordenCerrada = await this.intentarLiquidarOrden(manager, ordenId);
-      if (!ordenCerrada) {
-        throw new ConflictException('No fue posible liquidar la orden; operación revertida');
-      }
       return {
         ordenId, codigoOrden: orden.codigo_orden,
         mesa: orden.mesa_id ? { id: Number(orden.mesa_id), numero: orden.mesa_numero } : null,
