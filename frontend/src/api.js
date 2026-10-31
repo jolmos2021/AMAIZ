@@ -38,7 +38,8 @@ async function pedir(url, opciones = {}) {
     throw new Error("sin-conexion");
   }
 
-  const data = await res.json().catch(() => ({}));
+  const texto = await res.text();
+  const data = texto.trim() ? JSON.parse(texto) : null;
   if (!res.ok) throw new Error(extraerMensaje(data, res.status));
   return data;
 }
@@ -337,7 +338,12 @@ export const obtenerResumenCaja = (token, cajaId) =>
     headers: authHeaders(token),
   });
 
-export const cerrarCajaConArqueo = (token, cajaId, montoDeclarado, observaciones) =>
+export const cerrarCajaConArqueo = (
+  token,
+  cajaId,
+  montoDeclarado,
+  observaciones,
+) =>
   pedir(`${API_URL}/cajas/${cajaId}/cerrar`, {
     method: "PATCH",
     headers: authHeaders(token, true),
