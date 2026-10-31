@@ -386,7 +386,8 @@ export class CobrosService {
       const totales: number[] = [];
       const asignaciones: {
         detalleOrdenId: number;
-        cantidad: number;
+        cantidad?: number;
+        importeCentavos?: number;
       }[][] = [];
 
       if (dto.modalidad === ModalidadDivision.IGUALES) {
@@ -395,82 +396,115 @@ export class CobrosService {
             'La división igualitaria no admite asignaciones de productos',
           );
         }
-
         const base = Math.floor(totalCentavos / dto.personas.length);
         const resto = totalCentavos % dto.personas.length;
-
         if (base === 0) {
           throw new BadRequestException(
             'El total no permite crear tantas subcuentas positivas',
           );
         }
-
         dto.personas.forEach((_, i) => {
           totales.push(base + (i < resto ? 1 : 0));
           asignaciones.push([]);
         });
       } else {
-        const cantidadesAsignadas = new Map<number, number>();
-
-        for (const persona of dto.personas) {
-          const items = persona.items ?? [];
-          const idsPersona = new Set<number>();
-          let subtotal = 0;
-
-          if (!items.length) {
+        // Agrupar primero para poder repartir los centavos de porcentajes
+        // mediante restos mayores, sin perder dinero por redondeo.
+        type Participacion = {
+          persona: number; detalleOrdenId: number;
+          cantidad?: number; importeAsignado?: number; porcentaje?: number;
+        };
+        const porDetalle = new Map<number, Participacion[]>();
+        dto.personas.forEach((persona, i) => {
+          if (!persona.items?.length) {
             throw new BadRequestException(
               `La persona ${persona.nombre} no tiene productos asignados`,
             );
           }
-
-          for (const item of items) {
-            if (idsPersona.has(item.detalleOrdenId)) {
-              throw new BadRequestException(
-                'Un producto no puede repetirse dentro de la misma persona',
-              );
+          const vistos = new Set<number>();
+          for (const item of persona.items) {
+            if (vistos.has(item.detalleOrdenId)) {
+              throw new BadRequestException('Un producto no puede repetirse dentro de la misma persona');
             }
-
-            idsPersona.add(item.detalleOrdenId);
-
-            const detalle = detalleMap.get(item.detalleOrdenId);
-
-            if (!detalle) {
-              throw new BadRequestException(
-                `El detalle ${item.detalleOrdenId} no pertenece a los productos cobrables`,
-              );
+            vistos.add(item.detalleOrdenId);
+            if (!detalleMap.has(item.detalleOrdenId)) {
+              throw new BadRequestException(`El detalle ${item.detalleOrdenId} no pertenece a los productos cobrables`);
             }
-
-            const acumulado =
-              (cantidadesAsignadas.get(item.detalleOrdenId) ?? 0) +
-              item.cantidad;
-
-            if (acumulado > detalle.cantidad) {
-              throw new BadRequestException(
-                `Cantidad excedida para el detalle ${item.detalleOrdenId}`,
-              );
+            const modos = [item.cantidad, item.importeAsignado, item.porcentaje]
+              .filter((v) => v !== undefined);
+            if (modos.length !== 1) {
+              throw new BadRequestException('Indica exactamente una cantidad, importeAsignado o porcentaje por producto');
             }
-
-            cantidadesAsignadas.set(item.detalleOrdenId, acumulado);
-            subtotal += item.cantidad * detalle.precioCentavos;
+            const entradas = porDetalle.get(item.detalleOrdenId) ?? [];
+            entradas.push({ persona: i, ...item });
+            porDetalle.set(item.detalleOrdenId, entradas);
           }
-
-          if (subtotal <= 0) {
-            throw new BadRequestException(
-              'Cada subcuenta debe tener un importe positivo',
-            );
+        });
+        const asignadas = dto.personas.map(() => [] as {
+          detalleOrdenId: number; cantidad?: number; importeCentavos?: number;
+        }[]);
+        const subtotales = dto.personas.map(() => 0);
+        for (const [detalleOrdenId, detalle] of detalleMap) {
+          const entradas = porDetalle.get(detalleOrdenId) ?? [];
+          const valorTotal = detalle.cantidad * detalle.precioCentavos;
+          const unidades = entradas.filter((e) => e.cantidad !== undefined);
+          const importes = entradas.filter((e) => e.importeAsignado !== undefined);
+          const porcentajes = entradas.filter((e) => e.porcentaje !== undefined);
+          if (porcentajes.length && (unidades.length || importes.length)) {
+            throw new BadRequestException(`No mezcles porcentajes con cantidades o importes en el detalle ${detalleOrdenId}`);
           }
-
-          totales.push(subtotal);
-          asignaciones.push(items);
+          const valores = new Map<Participacion, number>();
+          if (porcentajes.length) {
+            const sumaPorcentajes = porcentajes.reduce((s, e) => s + Math.round(e.porcentaje! * 100), 0);
+            if (sumaPorcentajes !== 10000) {
+              throw new BadRequestException(`Los porcentajes del detalle ${detalleOrdenId} deben sumar 100%`);
+            }
+            const repartos = porcentajes.map((e) => {
+              const numerador = valorTotal * Math.round(e.porcentaje! * 100);
+              return { e, base: Math.floor(numerador / 10000), resto: numerador % 10000 };
+            });
+            let sobrantes = valorTotal - repartos.reduce((s, r) => s + r.base, 0);
+            repartos.sort((a, b) => b.resto - a.resto || a.e.persona - b.e.persona);
+            for (const r of repartos) {
+              valores.set(r.e, r.base + (sobrantes-- > 0 ? 1 : 0));
+            }
+          } else {
+            const cantidadTotal = unidades.reduce((s, e) => s + e.cantidad!, 0);
+            if (cantidadTotal > detalle.cantidad) {
+              throw new BadRequestException(`Cantidad excedida para el detalle ${detalleOrdenId}`);
+            }
+            // Si se combinan unidades completas e importes, el importe
+            // monetario representa el valor de las unidades restantes.
+            for (const e of unidades) valores.set(e, e.cantidad! * detalle.precioCentavos);
+            for (const e of importes) {
+              const centavos = Math.round(e.importeAsignado! * 100);
+              if (!Number.isSafeInteger(centavos) || centavos <= 0 ||
+                  Math.abs(e.importeAsignado! * 100 - centavos) > 0.000001) {
+                throw new BadRequestException('El importe debe ser positivo y tener máximo dos decimales');
+              }
+              valores.set(e, centavos);
+            }
+          }
+          const totalAsignado = [...valores.values()].reduce((s, n) => s + n, 0);
+          if (totalAsignado !== valorTotal) {
+            throw new BadRequestException(`El detalle ${detalleOrdenId} debe distribuirse exactamente por ${(valorTotal / 100).toFixed(2)}`);
+          }
+          for (const [e, centavos] of valores) {
+            if (centavos <= 0) {
+              throw new BadRequestException(`El detalle ${detalleOrdenId} genera una participación de valor cero`);
+            }
+            asignadas[e.persona].push({
+              detalleOrdenId,
+              ...(e.cantidad !== undefined ? { cantidad: e.cantidad } : { importeCentavos: centavos }),
+            });
+            subtotales[e.persona] += centavos;
+          }
         }
-
-        for (const [id, detalle] of detalleMap) {
-          if ((cantidadesAsignadas.get(id) ?? 0) !== detalle.cantidad) {
-            throw new BadRequestException(
-              `No se asignaron todas las unidades del detalle ${id}`,
-            );
-          }
+        if (subtotales.some((n) => n <= 0)) {
+          throw new BadRequestException('Cada subcuenta debe tener un importe positivo');
         }
+        totales.push(...subtotales);
+        asignaciones.push(...asignadas);
       }
 
       if (totales.reduce((a, b) => a + b, 0) !== totalCentavos) {
@@ -529,9 +563,10 @@ export class CobrosService {
         for (const item of asignaciones[i]) {
           await manager.query(
             `INSERT INTO subcuenta_items
-            (subcuenta_id, detalle_orden_id, cantidad)
-           VALUES ($1, $2, $3)`,
-            [subcuentaId, item.detalleOrdenId, item.cantidad],
+            (subcuenta_id, detalle_orden_id, cantidad, importe_asignado)
+           VALUES ($1, $2, $3, $4)`,
+            [subcuentaId, item.detalleOrdenId, item.cantidad ?? null,
+             item.importeCentavos === undefined ? null : (item.importeCentavos / 100).toFixed(2)],
           );
         }
 

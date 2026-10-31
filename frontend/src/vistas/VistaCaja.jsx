@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import DetalleSubcuentas from "./DetalleSubcuentas";
 import DividirCuentaIguales from "./DividirCuentaIguales";
+import DividirCuentaProductos from "./DividirCuentaProductos";
 import RegistrarPagoSubcuenta from "./RegistrarPagoSubcuenta";
 import CobroCombinado from "./CobroCombinado";
 import {
@@ -772,6 +773,20 @@ export default function VistaCaja({ sesion }) {
                       token={sesion.accessToken}
                       ordenId={ordenSeleccionada.id}
                       totalCobrable={ordenSeleccionada.totalCobrable}
+                      onDivisionRegistrada={(ordenId) => {
+                        setVersionActualizacion((actual) => actual + 1);
+                        actualizarSaldoOrden(ordenId);
+                      }}
+                    />
+                  )}
+
+                {!ordenSeleccionada.errorCobro &&
+                  ordenSeleccionada.saldoPorCubrir > 0 &&
+                  ordenSeleccionada.cantidadSubcuentas === 0 && (
+                    <DividirCuentaProductos
+                      key={`productos-${ordenSeleccionada.id}`}
+                      token={sesion.accessToken}
+                      ordenId={ordenSeleccionada.id}
                       onDivisionRegistrada={(ordenId) => {
                         setVersionActualizacion((actual) => actual + 1);
                         actualizarSaldoOrden(ordenId);

@@ -217,6 +217,14 @@ export const dividirCuentaIguales = (token, ordenId, nombres) =>
     }),
   });
 
+// Registrar división de productos completos o compartidos
+export const dividirCuentaProductos = (token, ordenId, personas) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}/dividir`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ modalidad: "PRODUCTOS", personas }),
+  });
+
 // Consultar métodos de pago configurados
 export const obtenerMetodosPago = (token) =>
   pedir(`${API_URL}/cobros/metodos`, {
