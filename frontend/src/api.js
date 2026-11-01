@@ -394,3 +394,33 @@ export const registrarMovimientoCaja = (token, cajaId, movimiento) =>
 // --- Historial de turnos de caja (lectura, Fase 6) ---
 export const listarCajas = (token) =>
   pedir(`${API_URL}/cajas`, { headers: authHeaders(token) });
+
+// --- Inventario (solo administrador en el backend) ---
+export const obtenerProductosInventario = (token) =>
+  pedir(`${API_URL}/productos?inactivos=true`, {
+    headers: authHeaders(token),
+  });
+
+export const ajustarStockProducto = (token, productoId, delta) =>
+  pedir(`${API_URL}/productos/${productoId}/stock`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ delta }),
+  });
+
+
+// --- Administración de productos y categorías (ADMINISTRADOR) ---
+export const obtenerCategoriasAdmin = (token) =>
+  pedir(`${API_URL}/categorias`, { headers: authHeaders(token) });
+export const crearProductoAdmin = (token, datos) =>
+  pedir(`${API_URL}/productos`, { method: "POST", headers: authHeaders(token, true), body: JSON.stringify(datos) });
+export const actualizarProductoAdmin = (token, id, datos) =>
+  pedir(`${API_URL}/productos/${id}`, { method: "PATCH", headers: authHeaders(token, true), body: JSON.stringify(datos) });
+export const eliminarProductoAdmin = (token, id) =>
+  pedir(`${API_URL}/productos/${id}`, { method: "DELETE", headers: authHeaders(token) });
+export const crearCategoriaAdmin = (token, datos) =>
+  pedir(`${API_URL}/categorias`, { method: "POST", headers: authHeaders(token, true), body: JSON.stringify(datos) });
+export const actualizarCategoriaAdmin = (token, id, datos) =>
+  pedir(`${API_URL}/categorias/${id}`, { method: "PATCH", headers: authHeaders(token, true), body: JSON.stringify(datos) });
+export const eliminarCategoriaAdmin = (token, id) =>
+  pedir(`${API_URL}/categorias/${id}`, { method: "DELETE", headers: authHeaders(token) });

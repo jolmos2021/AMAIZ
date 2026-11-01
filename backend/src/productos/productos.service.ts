@@ -98,6 +98,50 @@ export class ProductosService {
     return this.repo.save(producto);
   }
 
+  /** Solo elimina productos sin referencias en ninguna FK de PostgreSQL.
+   * Las FK siguen protegiendo contra operaciones concurrentes.
+   */
+  async eliminar(id: number): Promise<{ mensaje: string }> {
+    await this.obtenerPorId(id);
+    const referencias: Array<{ esquema: string; tabla: string; columna: string }> =
+      await this.dataSource.query(`
+        SELECT ns.nspname AS esquema, cl.relname AS tabla,
+               att.attname AS columna
+        FROM pg_constraint fk
+        JOIN pg_class cl ON cl.oid = fk.conrelid
+        JOIN pg_namespace ns ON ns.oid = cl.relnamespace
+        JOIN pg_class destino ON destino.oid = fk.confrelid
+        JOIN pg_attribute att ON att.attrelid = fk.conrelid
+          AND att.attnum = fk.conkey[1]
+        WHERE fk.contype = 'f' AND destino.oid = 'productos'::regclass
+          AND array_length(fk.conkey, 1) = 1
+      `);
+    for (const ref of referencias) {
+      const identificador = (valor: string) => '"' + valor.replace(/"/g, '""') + '"';
+      const tabla = `${identificador(ref.esquema)}.${identificador(ref.tabla)}`;
+      const columna = identificador(ref.columna);
+      const filas: Array<{ existe: number }> = await this.dataSource.query(
+        `SELECT 1 AS existe FROM ${tabla} WHERE ${columna} = $1 LIMIT 1`, [id],
+      );
+      if (filas.length) {
+        throw new ConflictException(
+          `No se puede eliminar el producto: tiene registros asociados en ${ref.tabla}. Ocúltalo del menú del día si ya no se vende.`,
+        );
+      }
+    }
+    try {
+      const resultado = await this.repo.delete(id);
+      if (!resultado.affected) throw new NotFoundException(`No existe un producto con id ${id}`);
+    } catch (error) {
+      const fallo = error as { driverError?: { code?: string }; code?: string };
+      if (fallo?.driverError?.code === '23503' || fallo?.code === '23503') {
+        throw new ConflictException('No se puede eliminar: el producto tiene registros relacionados.');
+      }
+      throw error;
+    }
+    return { mensaje: `Producto ${id} eliminado` };
+  }
+
   /**
    * Ajuste de stock por delta (recepción de mercadería / merma).
    * Atómico a nivel BD: el UPDATE con condición evita que dos

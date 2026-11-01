@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   ParseIntPipe,
@@ -53,6 +54,12 @@ export class ProductosController {
     @Body() dto: ActualizarProductoDto,
   ) {
     return this.productosService.actualizar(id, dto);
+  }
+
+  @Roles(RolUsuario.ADMINISTRADOR)
+  @Delete(':id')
+  eliminar(@Param('id', ParseIntPipe) id: number) {
+    return this.productosService.eliminar(id);
   }
 
   // PATCH /api/productos/:id/stock — recepción de mercadería / merma

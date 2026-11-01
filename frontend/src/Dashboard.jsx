@@ -6,6 +6,8 @@ import VistaCaja from "./vistas/VistaCaja";
 import VistaCreditos from "./vistas/VistaCreditos";
 import VistaClientes from "./vistas/VistaClientes";
 import VistaHistorial from "./vistas/VistaHistorial";
+import VistaInventario from "./vistas/VistaInventario";
+import VistaMenuAdmin from "./vistas/VistaMenuAdmin";
 import "./App.css";
 
 const CLAVE_VISTA = "meseroapp.ultima-vista";
@@ -24,6 +26,8 @@ const VISTAS = [
   { id: "clientes", icono: "👥", etiqueta: "Clientes" },
   { id: "creditos", icono: "🧾", etiqueta: "Créditos" },
   { id: "historial", icono: "📚", etiqueta: "Historial" },
+  { id: "inventario", icono: "📦", etiqueta: "Inventario" },
+  { id: "menu-admin", icono: "🍽️", etiqueta: "Administrar menú" },
   { id: "perfil", icono: "👤", etiqueta: "Perfil" },
 ];
 
@@ -48,8 +52,10 @@ export default function Dashboard({ sesion, alSalir }) {
 
   const puedeAccederCaja = ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol);
 
+  const esAdministrador = usuario.rol === "ADMINISTRADOR";
   const vistasDisponibles = VISTAS.filter(
-    (v) => !["caja", "clientes", "creditos", "historial"].includes(v.id) || puedeAccederCaja,
+    (v) => ["inventario", "menu-admin"].includes(v.id) ? esAdministrador :
+      !["caja", "clientes", "creditos", "historial"].includes(v.id) || puedeAccederCaja,
   );
 
   return (
@@ -103,6 +109,14 @@ export default function Dashboard({ sesion, alSalir }) {
 
         {vista === "historial" && puedeAccederCaja && (
           <VistaHistorial sesion={sesion} />
+        )}
+
+        {vista === "inventario" && esAdministrador && (
+          <VistaInventario sesion={sesion} />
+        )}
+
+        {vista === "menu-admin" && esAdministrador && (
+          <VistaMenuAdmin sesion={sesion} />
         )}
 
         {vista === "perfil" && (
