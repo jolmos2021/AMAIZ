@@ -204,6 +204,13 @@ export const obtenerSubcuentasOrden = (token, ordenId) =>
     headers: authHeaders(token),
   });
 
+// Cancelar una preparación de cobro completo sin pagos ni créditos.
+export const cancelarPreparacionCobroCompleto = (token, ordenId) =>
+  pedir(`${API_URL}/cobros/orden/${ordenId}/preparacion-cobro-completo`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+
 // Registrar una división de cuenta en partes iguales
 export const dividirCuentaIguales = (token, ordenId, nombres) =>
   pedir(`${API_URL}/cobros/orden/${ordenId}/dividir`, {

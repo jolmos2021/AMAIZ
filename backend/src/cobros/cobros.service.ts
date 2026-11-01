@@ -298,6 +298,53 @@ export class CobrosService {
     `);
   }
 
+  async cancelarPreparacionCobroCompleto(ordenId: number) {
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+      // Serializar con la creación de divisiones y el registro de cobros.
+      const ordenes = await manager.query(
+        `SELECT id, estado FROM ordenes WHERE id = $1 FOR UPDATE`, [ordenId],
+      );
+      if (!ordenes.length) throw new NotFoundException(`No existe la orden ${ordenId}`);
+      if (['CERRADA', 'ANULADA'].includes(ordenes[0].estado)) {
+        throw new ConflictException('No se puede cancelar el cobro de una orden cerrada o anulada');
+      }
+
+      const subcuentas = await manager.query(
+        `SELECT id, nombre, modalidad FROM subcuentas WHERE orden_id = $1 FOR UPDATE`,
+        [ordenId],
+      );
+      if (subcuentas.length !== 1 || subcuentas[0].nombre !== 'Cuenta completa' ||
+          subcuentas[0].modalidad !== 'IGUALES') {
+        throw new ConflictException('La orden no tiene una preparación de cobro completo cancelable');
+      }
+      const subcuentaId = subcuentas[0].id;
+      const vinculados = await manager.query(
+        `SELECT
+           (SELECT COUNT(*)::int FROM pagos WHERE orden_id = $1) AS pagos,
+           (SELECT COUNT(*)::int FROM creditos_clientes WHERE orden_id = $1) AS creditos,
+           (SELECT COUNT(*)::int FROM subcuenta_pagos WHERE subcuenta_id = $2) AS pagos_subcuenta`,
+        [ordenId, subcuentaId],
+      );
+      if (vinculados[0].pagos > 0 || vinculados[0].creditos > 0 ||
+          vinculados[0].pagos_subcuenta > 0) {
+        throw new ConflictException('No se puede volver a modalidades: ya existen pagos o créditos asociados');
+      }
+
+      // Los ítems de distribución son registros preparatorios, no movimientos financieros.
+      await manager.query(`DELETE FROM subcuenta_items WHERE subcuenta_id = $1`, [subcuentaId]);
+      await manager.query(`DELETE FROM subcuentas WHERE id = $1`, [subcuentaId]);
+      return { ordenId, preparacionCancelada: true };
+      });
+    } catch (error) {
+      const dbError = (error as { driverError?: { code?: string }; code?: string });
+      if (dbError.driverError?.code === '23503' || dbError.code === '23503') {
+        throw new ConflictException('No se puede cancelar: la subcuenta tiene registros asociados');
+      }
+      throw error;
+    }
+  }
+
   async dividirCuenta(ordenId: number, dto: DividirCuentaDto) {
     return this.dataSource.transaction(async (manager) => {
       // Bloqueo de la orden: evita divisiones y cobros simultáneos.

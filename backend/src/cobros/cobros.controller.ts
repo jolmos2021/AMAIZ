@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Body,
   Param,
   ParseIntPipe,
@@ -55,6 +56,12 @@ export class CobrosController {
   ) {
     return this.cobrosService.dividirCuenta(id, dto);
   }
+  @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
+  @Delete('orden/:id/preparacion-cobro-completo')
+  cancelarPreparacionCobroCompleto(@Param('id', ParseIntPipe) id: number) {
+    return this.cobrosService.cancelarPreparacionCobroCompleto(id);
+  }
+
   @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
   @Post('orden/:id/pagar')
   registrarPago(

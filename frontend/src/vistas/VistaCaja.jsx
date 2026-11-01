@@ -15,6 +15,7 @@ import {
   registrarMovimientoCaja,
   cerrarCajaConArqueo,
   dividirCuentaIguales,
+  cancelarPreparacionCobroCompleto,
   obtenerSubcuentasOrden,
 } from "../api";
 
@@ -204,6 +205,23 @@ export default function VistaCaja({ sesion }) {
       await actualizarSaldoOrden(ordenId);
     } catch (err) {
       setErrorCobroCompleto(err.message || "No se pudo preparar el cobro completo.");
+      await actualizarSaldoOrden(ordenId);
+    } finally {
+      setPreparandoCobroCompleto(false);
+    }
+  };
+
+  const volverAModalidades = async (ordenId) => {
+    if (!window.confirm("¿Cancelar la preparación del cobro completo y volver a elegir modalidad? No se eliminarán pagos registrados.")) return;
+    setErrorCobroCompleto("");
+    setPreparandoCobroCompleto(true);
+    try {
+      await cancelarPreparacionCobroCompleto(sesion.accessToken, ordenId);
+      setCuentaCompleta(false);
+      setVersionActualizacion((actual) => actual + 1);
+      await actualizarSaldoOrden(ordenId);
+    } catch (err) {
+      setErrorCobroCompleto(err.message || "No se pudo cancelar la preparación del cobro.");
       await actualizarSaldoOrden(ordenId);
     } finally {
       setPreparandoCobroCompleto(false);
@@ -748,7 +766,16 @@ export default function VistaCaja({ sesion }) {
                 {errorCobroCompleto && <p role="alert">{errorCobroCompleto}</p>}
                 {cuentaCompleta && !["CERRADA", "ANULADA"].includes(ordenSeleccionada.estado) &&
                   ordenSeleccionada.saldoPorCubrir > 0 && (
-                    <CobroCombinado
+                    <div>
+                      <button
+                        type="button"
+                        disabled={preparandoCobroCompleto}
+                        onClick={() => volverAModalidades(ordenSeleccionada.id)}
+                        style={{ marginBottom: 12 }}
+                      >
+                        {preparandoCobroCompleto ? "Cancelando preparación..." : "← Cancelar preparación y volver a modalidades"}
+                      </button>
+                      <CobroCombinado
                       key={`combinado-${ordenSeleccionada.id}`}
                       token={sesion.accessToken}
                       ordenId={ordenSeleccionada.id}
@@ -756,7 +783,8 @@ export default function VistaCaja({ sesion }) {
                       onCobroRegistrado={(resultado) =>
                         refrescarTrasCobro(ordenSeleccionada.id, resultado.ordenCerrada)
                       }
-                    />
+                      />
+                    </div>
                   )}
 
                 <DetalleSubcuentas
