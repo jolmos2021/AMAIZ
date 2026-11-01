@@ -4,6 +4,7 @@ import VistaOrdenes from "./vistas/VistaOrdenes";
 import VistaPerfil from "./vistas/VistaPerfil";
 import VistaCaja from "./vistas/VistaCaja";
 import VistaCreditos from "./vistas/VistaCreditos";
+import VistaClientes from "./vistas/VistaClientes";
 import VistaHistorial from "./vistas/VistaHistorial";
 import "./App.css";
 
@@ -20,6 +21,7 @@ const VISTAS = [
   { id: "mesas", icono: "🏠", etiqueta: "Mesas" },
   { id: "ordenes", icono: "📋", etiqueta: "Órdenes" },
   { id: "caja", icono: "💳", etiqueta: "Caja y Cobros" },
+  { id: "clientes", icono: "👥", etiqueta: "Clientes" },
   { id: "creditos", icono: "🧾", etiqueta: "Créditos" },
   { id: "historial", icono: "📚", etiqueta: "Historial" },
   { id: "perfil", icono: "👤", etiqueta: "Perfil" },
@@ -47,7 +49,7 @@ export default function Dashboard({ sesion, alSalir }) {
   const puedeAccederCaja = ["ADMINISTRADOR", "CAJERO"].includes(usuario.rol);
 
   const vistasDisponibles = VISTAS.filter(
-    (v) => !["caja", "creditos", "historial"].includes(v.id) || puedeAccederCaja,
+    (v) => !["caja", "clientes", "creditos", "historial"].includes(v.id) || puedeAccederCaja,
   );
 
   return (
@@ -92,6 +94,9 @@ export default function Dashboard({ sesion, alSalir }) {
 
         {vista === "caja" && puedeAccederCaja && <VistaCaja sesion={sesion} />}
 
+        {vista === "clientes" && puedeAccederCaja && (
+          <VistaClientes sesion={sesion} />
+        )}
         {vista === "creditos" && puedeAccederCaja && (
           <VistaCreditos sesion={sesion} />
         )}

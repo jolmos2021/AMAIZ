@@ -1,7 +1,18 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 
 import { ClientesService } from './clientes.service';
 import { CrearClienteDto } from './dto/crear-cliente.dto';
+import { EditarClienteDto } from './dto/editar-cliente.dto';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -23,5 +34,17 @@ export class ClientesController {
   @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
   crear(@Body() dto: CrearClienteDto) {
     return this.clientesService.crear(dto.nombre, dto.telefono, dto.tipo);
+  }
+
+  @Patch(':id')
+  @Roles(RolUsuario.CAJERO, RolUsuario.ADMINISTRADOR)
+  editar(@Param('id') id: string, @Body() dto: EditarClienteDto) {
+    return this.clientesService.editar(id, dto);
+  }
+
+  @Delete(':id')
+  @Roles(RolUsuario.ADMINISTRADOR)
+  eliminar(@Param('id') id: string) {
+    return this.clientesService.eliminar(id);
   }
 }

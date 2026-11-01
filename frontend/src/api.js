@@ -312,6 +312,19 @@ export const crearCliente = (token, datos) =>
     body: JSON.stringify(datos),
   });
 
+export const editarCliente = (token, id, datos) =>
+  pedir(`${API_URL}/clientes/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: authHeaders(token, true),
+    body: JSON.stringify(datos),
+  });
+
+export const eliminarCliente = (token, id) =>
+  pedir(`${API_URL}/clientes/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+
 // --- Créditos ---
 
 // Registrar un crédito parcial o total para una subcuenta.
